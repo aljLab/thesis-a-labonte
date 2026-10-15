@@ -73,7 +73,7 @@ func (dpl *DplServer) CompileHandler(res http.ResponseWriter, req *http.Request)
 		"dpl", "compile", 
 		"--target", body.Target,
 		"--out_directory", dpl.VolumePath, 
-		body.ProgramName,
+		fmt.Sprintf("%s/%s", dpl.VolumePath, body.ProgramName),
 	)
 
 	out, err := cmd.CombinedOutput(); if err != nil {
