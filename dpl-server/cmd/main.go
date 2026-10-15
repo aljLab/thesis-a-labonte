@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"net/http"
 	"os/exec"
 	"time"
@@ -54,8 +56,10 @@ func main(){
 		Handler:  router,
 	}
 	router.HandleFunc("/dpl/compile", dpl.CompileHandler).Methods("POST")
-	router.HandleFunc("/dpl/compile", dpl.LoadHandler).Methods("POST")
-	go server.ListenAndServe()
+	router.HandleFunc("/dpl/load", dpl.LoadHandler).Methods("POST")
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatalf("HTTP server failed: %v", err)
+	}
 }
 
 func (dpl *DplServer) CompileHandler(res http.ResponseWriter, req *http.Request){
