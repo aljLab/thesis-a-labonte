@@ -82,6 +82,8 @@ func (dpl *DplServer) CompileHandler(res http.ResponseWriter, req *http.Request)
 
 	fmt.Printf("Compile succeeded. %s", string(out))
 	fmt.Printf("Artifacts located at %s", dpl.VolumePath)
+
+	res.Write([]byte("Compile OK."))
 }	
 
 func (dpl *DplServer) LoadHandler(res http.ResponseWriter, req *http.Request){
@@ -107,4 +109,5 @@ func (dpl *DplServer) LoadHandler(res http.ResponseWriter, req *http.Request){
 	}
 
 	fmt.Printf("Load succeeded. %s", string(out))
+	res.Write([]byte("Load OK."))
 }
