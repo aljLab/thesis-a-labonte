@@ -17,7 +17,7 @@ import (
 const (
 	defaultServerAddr = "172.16.44.80"
 	defaultServerPort = "8080"
-	defaultVolumePath = "/shared/loom/bluefield3-driver"
+	defaultVolumePath = "/etc/loom"
 )
 
 type CompileRequest struct {
@@ -40,7 +40,7 @@ type DplServer struct {
 func main(){
 	serverAddr := flag.String("listen-addr", defaultServerAddr, "IP address the server should listen on.")
 	serverPort := flag.String("listen-port", defaultServerPort, "Port the server should listen on.")
-	volumePath := flag.String("output", defaultVolumePath, "(Shared) Output directory for the compiled artifacts")
+	volumePath := flag.String("shared-vol-path", defaultVolumePath, "(Shared) Output directory for the compiled artifacts")
 
 	flag.Parse()
 
@@ -76,16 +76,17 @@ func (dpl *DplServer) CompileHandler(res http.ResponseWriter, req *http.Request)
 	cmd := exec.CommandContext(ctx, 
 		"dpl", "compile", 
 		"--target", body.Target,
-		"--out_directory", dpl.VolumePath, 
+		"--odir", dpl.VolumePath, 
 		fmt.Sprintf("%s/%s", dpl.VolumePath, body.ProgramName),
 	)
 
 	out, err := cmd.CombinedOutput(); if err != nil {
 		http.Error(res, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
-	fmt.Printf("Compile succeeded. %s", string(out))
-	fmt.Printf("Artifacts located at %s", dpl.VolumePath)
+	fmt.Printf("Compile succeeded. %s\n", string(out))
+	fmt.Printf("Artifacts located at %s.\n", dpl.VolumePath)
 
 	res.Write([]byte("Compile OK."))
 }	
@@ -110,8 +111,9 @@ func (dpl *DplServer) LoadHandler(res http.ResponseWriter, req *http.Request){
 
 	out, err := cmd.CombinedOutput(); if err != nil {
 		http.Error(res, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
-	fmt.Printf("Load succeeded. %s", string(out))
+	fmt.Printf("Load succeeded. %s\n", string(out))
 	res.Write([]byte("Load OK."))
 }
