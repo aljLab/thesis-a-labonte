@@ -17,7 +17,7 @@ import (
 const (
 	defaultServerAddr = "172.16.44.80"
 	defaultServerPort = "8090"
-	defaultVolumePath = "/etc/loom"
+	defaultVolumePath = "/tmp/loom"
 )
 
 type CompileRequest struct {
