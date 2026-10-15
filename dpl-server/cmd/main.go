@@ -9,8 +9,10 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
+	"strings"
 	"time"
 
+	"path/filepath"
 	"github.com/gorilla/mux"
 )
 
@@ -22,13 +24,13 @@ const (
 
 type CompileRequest struct {
 	Target      string
-	ProgramName string
+	FileName string
 }
 
 type LoadRequest struct {
 	DeviceID    string
 	GrpcAddr    string
-	ProgramName string
+	FileName string
 }
 
 type DplServer struct {
@@ -76,11 +78,14 @@ func (dpl *DplServer) CompileHandler(res http.ResponseWriter, req *http.Request)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	programName := strings.TrimSuffix(body.FileName, filepath.Ext(body.FileName))
+	dir := filepath.Join(dpl.VolumePath, programName)
+
 	cmd := exec.CommandContext(ctx, 
 		"dpl", "compile", 
 		"--target", body.Target,
 		"--odir", dpl.VolumePath, 
-		fmt.Sprintf("%s/%s", dpl.VolumePath, body.ProgramName),
+		filepath.Join(dir, body.FileName),
 	)
 
 	out, err := cmd.CombinedOutput(); if err != nil {
@@ -107,11 +112,14 @@ func (dpl *DplServer) LoadHandler(res http.ResponseWriter, req *http.Request){
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	programName := strings.TrimSuffix(body.FileName, filepath.Ext(body.FileName))
+	dir := filepath.Join(dpl.VolumePath, programName)
+
 	cmd := exec.CommandContext(ctx, 
 		"dpl", "p4runtime_sh", 
 		"--grpc-addr", body.GrpcAddr,
 		"--device-id", body.DeviceID, 
-		"--config", fmt.Sprintf("%s/%s.p4info.txt,%s/%s.dplconfig", dpl.VolumePath, body.ProgramName, dpl.VolumePath, body.ProgramName), 
+		"--config", fmt.Sprintf("%s/%s.p4info.txt,%s/%s.dplconfig", dir, body.FileName, dir, body.FileName), 
 	)
 
 	out, err := cmd.CombinedOutput(); if err != nil {
