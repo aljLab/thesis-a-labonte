@@ -84,7 +84,7 @@ func (dpl *DplServer) CompileHandler(res http.ResponseWriter, req *http.Request)
 	cmd := exec.CommandContext(ctx, 
 		"dpl", "compile", 
 		"--target", body.Target,
-		"--odir", dpl.VolumePath, 
+		"--odir", dir, 
 		filepath.Join(dir, body.FileName),
 	)
 
@@ -98,7 +98,7 @@ func (dpl *DplServer) CompileHandler(res http.ResponseWriter, req *http.Request)
 	}
 
 	fmt.Printf("Compile succeeded. %s\n", string(out))
-	fmt.Printf("Artifacts located at %s.\n", dpl.VolumePath)
+	fmt.Printf("Artifacts located at %s.\n", dir)
 
 	res.Write([]byte("Compile OK."))
 }	
@@ -121,7 +121,7 @@ func (dpl *DplServer) LoadHandler(res http.ResponseWriter, req *http.Request){
 		"dpl", "p4runtime_sh", 
 		"--grpc-addr", body.GrpcAddr,
 		"--device-id", body.DeviceID, 
-		"--config", fmt.Sprintf("%s/%s.p4info.txt,%s/%s.dplconfig", dir, body.FileName, dir, body.FileName), 
+		"--config", fmt.Sprintf("%s/%s.p4info.txt,%s/%s.dplconfig", dir, programName, dir, programName), 
 	)
 
 	out, err := cmd.CombinedOutput(); if err != nil {
