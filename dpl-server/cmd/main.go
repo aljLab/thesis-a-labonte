@@ -57,6 +57,9 @@ func main(){
 	}
 	router.HandleFunc("/dpl/compile", dpl.CompileHandler).Methods("POST")
 	router.HandleFunc("/dpl/load", dpl.LoadHandler).Methods("POST")
+
+	fmt.Printf("Starting HTTP DPL server on %s:%s\n", dpl.ServerAddr, dpl.ServerPort)
+
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("HTTP server failed: %v", err)
 	}
