@@ -16,7 +16,7 @@ import (
 
 const (
 	defaultServerAddr = "172.16.44.80"
-	defaultServerPort = "8080"
+	defaultServerPort = "8090"
 	defaultVolumePath = "/etc/loom"
 )
 
@@ -81,6 +81,7 @@ func (dpl *DplServer) CompileHandler(res http.ResponseWriter, req *http.Request)
 	)
 
 	out, err := cmd.CombinedOutput(); if err != nil {
+		fmt.Println("when compiling", err)
 		http.Error(res, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -110,6 +111,7 @@ func (dpl *DplServer) LoadHandler(res http.ResponseWriter, req *http.Request){
 	)
 
 	out, err := cmd.CombinedOutput(); if err != nil {
+		fmt.Println("when loading", err)
 		http.Error(res, err.Error(), http.StatusInternalServerError)
 		return
 	}
