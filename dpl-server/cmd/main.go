@@ -82,6 +82,7 @@ func (dpl *DplServer) CompileHandler(res http.ResponseWriter, req *http.Request)
 
 	out, err := cmd.CombinedOutput(); if err != nil {
 		fmt.Println("when compiling", err)
+		fmt.Println("Output", string(out))
 		http.Error(res, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -112,6 +113,7 @@ func (dpl *DplServer) LoadHandler(res http.ResponseWriter, req *http.Request){
 
 	out, err := cmd.CombinedOutput(); if err != nil {
 		fmt.Println("when loading", err)
+		fmt.Println("Output", string(out))
 		http.Error(res, err.Error(), http.StatusInternalServerError)
 		return
 	}
