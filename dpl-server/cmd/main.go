@@ -88,6 +88,8 @@ func (dpl *DplServer) CompileHandler(res http.ResponseWriter, req *http.Request)
 		filepath.Join(dir, body.FileName),
 	)
 
+	fmt.Println("executing compile command: ", cmd.String())
+
 	out, err := cmd.CombinedOutput(); if err != nil {
 		fmt.Println("when compiling", err)
 		fmt.Println("Output", string(out))
