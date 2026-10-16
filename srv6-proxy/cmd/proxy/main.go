@@ -131,7 +131,7 @@ func readAndLogTraffic(reader *SRv6ProxyReader, prefix string) {
 			return
 		}
 
-		for i := 0; i < n; i++ {
+		for i := range n {
 			packet := bufs[i][:sizes[i]]
 			if len(packet) == 0 {
 				continue
@@ -147,6 +147,11 @@ func readAndLogTraffic(reader *SRv6ProxyReader, prefix string) {
 			// TODO: Parse packet and update/use reader.cache.
 		}
 
-		reader.tunDev.Write(bufs, 0)
+		n_write, err := reader.tunDev.Write(bufs, 0); if err != nil {
+			log.Printf("Could not write back to %s: %d", reader.ifaceName, err)
+		} else {
+			log.Printf("Wrote %d packets back to %s", n_write, reader.ifaceName)
+		}
+
 	}
 }
