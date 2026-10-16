@@ -231,7 +231,7 @@ func ConfigureSysctls(Tun0, Tun1 string) error {
 // Interface creation
 // -----------------------------------------------------------------------------
 
-func SetupLinks() error {
+func SetupLinks(Tun0, Tun1 string) error {
 	/* TUN devices: raw IP packets, no packet-information header.
 	// for _, name := range []string{Tun0, Tun1} {
 		if err := ensureLink(&netlink.Tuntap{
@@ -253,7 +253,7 @@ func SetupLinks() error {
 		return err
 	}
 
-	for _, name := range []string{VethIn, VethOut, Decap4} {
+	for _, name := range []string{Tun0, Tun1, VethIn, VethOut, Decap4} {
 		if err := ensureUp(name); err != nil {
 			return err
 		}

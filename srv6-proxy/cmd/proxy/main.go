@@ -45,7 +45,7 @@ const (
 )
 
 func main() {
-	// Create TUN devices.
+	// Create TUN devices
 	tun0dev, err := tun.CreateTUN(tun0, MTU)
 	if err != nil {
 		log.Fatalf("create tun0: %v", err)
@@ -59,24 +59,30 @@ func main() {
 	}
 	defer tun1dev.Close()
 
-	// Set up the other development interfaces.
-	// SetupLinks must no longer create tun0 or tun1.
-	setup.SetupLinks()
-
+	// get names of actual interfaces
 	tun0name, err := tun0dev.Name()
 	if err != nil {
 		log.Fatalf("get tun0 name: %v", err)
 	}
-
+	
 	tun1name, err := tun1dev.Name()
 	if err != nil {
 		log.Fatalf("get tun1 name: %v", err)
 	}
 
+	// Set up all interfaces tun0, tun1, decap4, for devel: veth-pair
+	setup.SetupLinks(tun0name, tun1name)
+
+	// ensure the system allows srv6 and vrf
 	setup.ConfigureSysctls(tun0name, tun1name)
+
+	// add routes for development:
+	// 10.0.10.0/24 encap seg6 mode encap segs 2 [ fd00:2 fd00:3 ] dev tun0
+	// table 200: default dev veth-in
+	// table 201: default dev tun1
+	// fd::03 encap seg6local action END.DT4 vrftable main dev decap4 table 202
 	setup.SetupRoutesAndRules(tun0name, tun1name)
 
-	// One shared cache for both directions.
 	cache := &SRHCache{}
 
 	reader0 := &SRv6ProxyReader{
