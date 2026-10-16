@@ -142,7 +142,7 @@ func readAndLogTraffic(reader *SRv6ProxyReader, prefix string) {
 		}
 
 		for i := range n {
-			packet := bufs[i][:sizes[i]]
+			packet := bufs[i][offset:offset + sizes[i]]
 			if len(packet) == 0 {
 				continue
 			}
@@ -169,7 +169,7 @@ func readAndLogTraffic(reader *SRv6ProxyReader, prefix string) {
 			continue
 		}
 
-		log.Printf("%s: wrote %d packets", reader.ifaceName, nWrite)
+		log.Printf("%s: wrote %d bytes", reader.ifaceName, nWrite)
 
 	}
 }
