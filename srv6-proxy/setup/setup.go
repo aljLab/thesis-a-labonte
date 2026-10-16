@@ -1,5 +1,5 @@
 //go:build linux
-package main
+package setup
 
 import (
 	"fmt"
@@ -195,7 +195,7 @@ func writeSysctl(path, value string) error {
 	return nil
 }
 
-func configureSysctls() error {
+func ConfigureSysctls(Tun0, Tun1 string) error {
 	// The VRF must already exist before setting strict mode.
 	if err := writeSysctl("/proc/sys/net/vrf/strict_mode", "1"); err != nil {
 		return fmt.Errorf("enable VRF strict mode: %w", err)
@@ -231,9 +231,9 @@ func configureSysctls() error {
 // Interface creation
 // -----------------------------------------------------------------------------
 
-func setupLinks() error {
-	// TUN devices: raw IP packets, no packet-information header.
-	for _, name := range []string{Tun0, Tun1} {
+func SetupLinks() error {
+	/* TUN devices: raw IP packets, no packet-information header.
+	// for _, name := range []string{Tun0, Tun1} {
 		if err := ensureLink(&netlink.Tuntap{
 			LinkAttrs: netlink.LinkAttrs{Name: name},
 			Mode:      netlink.TUNTAP_MODE_TUN,
@@ -241,7 +241,7 @@ func setupLinks() error {
 		}); err != nil {
 			return err
 		}
-	}
+	}*/
 
 	// An unnumbered veth pair. No IP addresses are assigned.
 	if err := ensureVethPair(); err != nil {
@@ -253,7 +253,7 @@ func setupLinks() error {
 		return err
 	}
 
-	for _, name := range []string{Tun0, Tun1, VethIn, VethOut, Decap4} {
+	for _, name := range []string{VethIn, VethOut, Decap4} {
 		if err := ensureUp(name); err != nil {
 			return err
 		}
@@ -266,7 +266,7 @@ func setupLinks() error {
 // Routes and policy rules
 // -----------------------------------------------------------------------------
 
-func setupRoutesAndRules() error {
+func SetupRoutesAndRules(Tun0, Tun1 string) error {
 	tun0, err := getLink(Tun0)
 	if err != nil {
 		return err
@@ -410,7 +410,7 @@ func setupRoutesAndRules() error {
 }
 
 func main() {
-	if os.Geteuid() != 0 {
+	/* if os.Geteuid() != 0 {
 		fmt.Fprintln(os.Stderr, "Run as root; CAP_NET_ADMIN is required.")
 		os.Exit(1)
 	}
@@ -429,6 +429,6 @@ func main() {
 		fmt.Fprintln(os.Stderr, "route/rule setup:", err)
 		os.Exit(1)
 	}
-
+ */
 	fmt.Println("SRv6 proxy topology configured.")
 }
