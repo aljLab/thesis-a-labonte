@@ -146,5 +146,7 @@ func readAndLogTraffic(reader *SRv6ProxyReader, prefix string) {
 
 			// TODO: Parse packet and update/use reader.cache.
 		}
+
+		reader.tunDev.Write(bufs, 0)
 	}
 }
