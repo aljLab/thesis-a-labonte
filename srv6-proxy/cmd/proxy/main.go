@@ -1,10 +1,10 @@
-
- //go:build linux
+//go:build linux
 
 package main
 
 import (
 	"log"
+	"net/netip"
 	"sync"
 
 	"golang.zx2c4.com/wireguard/tun"
@@ -12,21 +12,27 @@ import (
 	"github.com/aljLab/thesis-a-labonte/srv6-proxy/setup"
 )
 
-type IPv6Header struct {
-	Raw []byte
-}
-
-type SRHeader struct {
-	Raw []byte
+type SRv6Header struct {
+	Start           [24]byte
+	DstAddr         [16]byte
+	NextHeader      [1]byte
+	HdrExtLen       [1]byte
+	RoutingType     [1]byte
+	SegmentsLeft    [1]byte
+	FirstSeg        [1]byte
+	Flags           [1]byte
+	Tag             [2]byte
+	SegmentList     []byte
+	Tlvs            []byte
 }
 
 type SRHCache struct {
-	outerHeader IPv6Header
-	srh         SRHeader
-	mu          sync.Mutex
+	Header      SRv6Header
+	TotalSize   int
+	Mu          sync.Mutex // change to RWLock
 }
 
-type SRv6ProxyWriter struct {
+type SRv6ProxyWorker struct {
 	ifaceName string
 	tunDev    tun.Device
 	cache     *SRHCache
@@ -42,6 +48,7 @@ const (
 	tun0 = "tun0"
 	tun1 = "tun1"
 	MTU  = 1294
+	VIRTIO_OFFSET = 16
 )
 
 func main() {
@@ -85,12 +92,12 @@ func main() {
 
 	cache := &SRHCache{}
 
-	reader0 := &SRv6ProxyReader{
+	decapWorker := &SRv6ProxyWorker{
 		ifaceName: tun0name,
 		tunDev:    tun0dev,
 		cache:     cache,
 	}
-	reader1 := &SRv6ProxyReader{
+	encapWorker := &SRv6ProxyWorker{
 		ifaceName: tun1name,
 		tunDev:    tun1dev,
 		cache:     cache,
@@ -101,43 +108,35 @@ func main() {
 
 	go func() {
 		defer wg.Done()
-		readAndLogTun0Traffic(reader0)
+		decapWorker.decapTraffic()
 	}()
 
 	go func() {
 		defer wg.Done()
-		readAndLogTun1Traffic(reader1)
+		encapWorker.encapTraffic()
 	}()
 
 	wg.Wait()
 }
 
-func readAndLogTun0Traffic(reader *SRv6ProxyReader) {
-	readAndLogTraffic(reader, "TUN0 - Inwards ==>")
-}
-
-func readAndLogTun1Traffic(reader *SRv6ProxyReader) {
-	readAndLogTraffic(reader, "TUN1 - Outwards <==")
-}
-
-func readAndLogTraffic(reader *SRv6ProxyReader, prefix string) {
-	offset := 16 // make at least room for virtio linux header
+func (worker *SRv6ProxyWorker) decapTraffic() {
+	offset := VIRTIO_OFFSET // make at least room for virtio linux header
 	buffSize := 65535 //64Kib
-	mtu, _ := reader.tunDev.MTU();
+	mtu, _ := worker.tunDev.MTU();
 	log.Printf("MTU %d", mtu)
 
 	// create one buffer for each (potential) packet, each with offset + max package size (also for writing, GRO)
 	// todo: set different buffers for reading and writing: read buffers can be way smaller -> calc MTU for SRv6 + IFace used
-	bufs := make([][]byte, reader.tunDev.BatchSize())
+	bufs := make([][]byte, worker.tunDev.BatchSize())
 	for i := range bufs {
 		bufs[i] = make([]byte, offset + buffSize)
 	}
-	sizes := make([]int, reader.tunDev.BatchSize())
+	sizes := make([]int, worker.tunDev.BatchSize())
 
 	for {
-		n, err := reader.tunDev.Read(bufs, sizes, offset)
+		n, err := worker.tunDev.Read(bufs, sizes, offset)
 		if err != nil {
-			log.Printf("%s: TUN read failed: %v", reader.ifaceName, err)
+			log.Printf("%s: TUN read failed: %v", worker.ifaceName, err)
 			return
 		}
 
@@ -148,28 +147,162 @@ func readAndLogTraffic(reader *SRv6ProxyReader, prefix string) {
 			}
 
 			version := packet[0] >> 4
-			nextHeader := packet[6]
-
 			log.Printf(
-				"%s %s: %d bytes, IPv%d, nextHeader: %d",
-				prefix, reader.ifaceName, len(packet), version, nextHeader,
+				"==> %s: %d bytes, IPv%d",
+				worker.ifaceName, len(packet), version,
 			)
 
-			// TODO: Parse packet and update/use reader.cache.
+			if version == 6 {
+				nextHeader := packet[6]
+				log.Printf("NextHeader: %d", nextHeader)
+
+				// decap SRv6 SRH and cache
+				if nextHeader == 43 {
+					totalHeaderBytes, _ := worker.processSRv6Header(packet)
+
+					offset = offset + int(totalHeaderBytes) // move offset by the length of outer ipv6 + srh
+				} 
+			}
+
+			if version == 4{
+				src, _ := netip.AddrFromSlice(packet[12:16])
+				dst, _ := netip.AddrFromSlice(packet[16:20])
+				log.Printf("IPv4 %s ==> %s ", src, dst)
+			}
+		}
+		
+/* 		packets := make([][]byte, n)
+		for i := range n {
+			packets[i] = bufs[i][:sizes[i]]
+		} */
+
+		nWrite, err := worker.tunDev.Write(bufs, offset) // offset might have changed if NextHeader == 43
+		if err != nil {
+			log.Printf("%s: TUN write failed: %v", worker.ifaceName, err)
+			continue
+		}
+
+		log.Printf("%s: wrote %d bytes", worker.ifaceName, nWrite)
+
+	}
+}
+
+func (worker *SRv6ProxyWorker) encapTraffic(){
+	worker.cache.Mu.Lock()
+	totalSize := worker.cache.TotalSize
+	header := worker.cache.Header
+	worker.cache.Mu.Unlock()
+	
+	offset := VIRTIO_OFFSET
+	buffSize := 65535 - offset//64Kib, but could be MTU
+
+	bufs := make([][]byte, worker.tunDev.BatchSize())
+	for i := range bufs {
+		bufs[i] = make([]byte, offset + buffSize)
+	}
+	sizes := make([]int, worker.tunDev.BatchSize())
+
+	for {
+		n, err := worker.tunDev.Read(bufs, sizes, offset)
+		if err != nil {
+			log.Printf("%s: TUN read failed: %v", worker.ifaceName, err)
+			return
+		}
+
+		for i := range n {
+			packet := bufs[i][offset : offset + sizes[i]]
+			if len(packet) == 0 {
+				continue
+			}
+
+			version := packet[0] >> 4
+			log.Printf(
+				"<== %s: %d bytes, IPv%d",
+				worker.ifaceName, len(packet), version,
+			)
+
+			if version == 4{
+				src, _ := netip.AddrFromSlice(packet[12:16])
+				dst, _ := netip.AddrFromSlice(packet[16:20])
+				log.Printf("IPv4 %s ==> %s ", src, dst)
+			}
+
 		}
 		
 		packets := make([][]byte, n)
 		for i := range n {
-			packets[i] = bufs[i][:sizes[i]]
+			// write packet buff: |------SRv6 Header----|--Packet-------------------------------|
+			packets[i] = append(header.ToByte(totalSize), bufs[i][offset : offset + sizes[i]]...)
 		}
 
-		nWrite, err := reader.tunDev.Write(packets, offset)
+		nWrite, err := worker.tunDev.Write(packets, offset) // write tun tun file with virtio offset
 		if err != nil {
-			log.Printf("%s: TUN write failed: %v", reader.ifaceName, err)
+			log.Printf("%s: TUN write failed: %v", worker.ifaceName, err)
 			continue
 		}
 
-		log.Printf("%s: wrote %d bytes", reader.ifaceName, nWrite)
+		log.Printf("%s: wrote %d bytes", worker.ifaceName, nWrite)
 
 	}
+}
+
+func (w *SRv6ProxyWorker) processSRv6Header(packet []byte) (byte, error) {
+	start := packet[:24]
+	_ = packet[24:40]
+	innerNextHeader := packet[40:41]
+	hdrExtLen := packet[41:42] // length of segments + options in octets
+	routingType := packet[42:43]
+	segmentsLeft := packet[43:44] // points to active segment
+	lastIndex := packet[44:45] // = FirstSegment
+	flags := packet[45:46]
+	tag := packet[46:48]
+
+	segmentList := make([][]byte, lastIndex[0] + 1)
+	offset := 48
+	for i := range segmentList {
+		k := offset + i * 16
+		segmentList[i] = packet[k:k+16]
+	}
+
+	// decrement segmentsLeft
+	// copy segmentList[segmentsLeft] into dst of outer
+	activeSID := segmentsLeft[0] - 1
+	totalHeaderBytes := hdrExtLen[0] + byte(48)
+	segmentListEndOffset := 48 + len(segmentList) * 16
+	updatedHeader := SRv6Header{
+		Start: [24]byte(start),
+		DstAddr: [16]byte(segmentList[activeSID]),
+		NextHeader: [1]byte(innerNextHeader),
+		HdrExtLen: [1]byte(hdrExtLen),
+		RoutingType: [1]byte(routingType),
+		SegmentsLeft: [1]byte{activeSID}, // is already byte
+		FirstSeg: [1]byte(lastIndex),
+		Flags: [1]byte(flags),
+		Tag: [2]byte(tag),
+		SegmentList: packet[48:segmentListEndOffset],
+		Tlvs: packet[segmentListEndOffset:],
+	}
+
+	w.cache.Mu.Lock()
+	w.cache.Header = updatedHeader
+	w.cache.TotalSize = int(totalHeaderBytes)
+	w.cache.Mu.Unlock()
+
+	// return the total length of the header
+	return totalHeaderBytes, nil
+}
+
+func (h *SRv6Header) ToByte(totalSize int) []byte {
+	bits := append(h.Start[:], h.DstAddr[:]...)
+	bits = append(bits, h.NextHeader[0])
+	bits = append(bits, h.HdrExtLen[0])
+	bits = append(bits, h.RoutingType[0])
+	bits = append(bits, h.SegmentsLeft[0])
+	bits = append(bits, h.FirstSeg[0])
+	bits = append(bits, h.Flags[0])
+	bits = append(bits, h.Tag[:]...)
+	bits = append(bits, h.SegmentList...)
+	bits = append(bits, h.Tlvs...)
+	
+	return bits
 }
