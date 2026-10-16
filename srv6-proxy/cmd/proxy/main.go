@@ -146,12 +146,19 @@ func readAndLogTraffic(reader *SRv6ProxyReader, prefix string) {
 
 			// TODO: Parse packet and update/use reader.cache.
 		}
-
-		n_write, err := reader.tunDev.Write(bufs, 0); if err != nil {
-			log.Printf("Could not write back to %s: %d", reader.ifaceName, err)
-		} else {
-			log.Printf("Wrote %d packets back to %s", n_write, reader.ifaceName)
+		
+		packets := make([][]byte, n)
+		for i := range n {
+			packets[i] = bufs[i][:sizes[i]]
 		}
+
+		nWrite, err := reader.tunDev.Write(packets, 0)
+		if err != nil {
+			log.Printf("%s: TUN write failed: %v", reader.ifaceName, err)
+			continue
+		}
+
+		log.Printf("%s: wrote %d packets", reader.ifaceName, nWrite)
 
 	}
 }
