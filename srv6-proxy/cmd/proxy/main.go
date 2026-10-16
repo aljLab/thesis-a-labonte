@@ -121,7 +121,6 @@ func readAndLogTun1Traffic(reader *SRv6ProxyReader) {
 }
 
 func readAndLogTraffic(reader *SRv6ProxyReader, prefix string) {
-	// WireGuard's TUN API reads batches of packets.
 	bufs := [][]byte{make([]byte, 65535)}
 	sizes := make([]int, 1)
 

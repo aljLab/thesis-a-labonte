@@ -406,6 +406,19 @@ func SetupRoutesAndRules(Tun0, Tun1 string) error {
 		return err
 	}
 
+	// 6. Route to SID network via tun0:
+	//
+	//    IPv6 packets received with dst fd00::/64
+	//        -> default route
+	//        -> tun1
+	if err := ensureRoute(&netlink.Route{
+		LinkIndex: tun0.Attrs().Index,
+		Dst:       mustCIDR("fd00::/64"),
+		Family:    netlink.FAMILY_V6,
+	}); err != nil {
+		return err
+	}
+
 	return nil
 }
 
