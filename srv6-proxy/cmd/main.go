@@ -200,7 +200,7 @@ func ensureRoutes(tun0iface netlink.Link, dstNet *net.IPNet, decap_name, encap_n
 	// Resolve the output interface.
 	inIface, err := netlink.LinkByName("enp94s0f0np0")
 	if err != nil {
-		fmt.Errorf("find enp94s0f0np0: %w", err)
+		return fmt.Errorf("find enp94s0f0np0: %w", err)
 	}
 
 	route := netlink.Route{
