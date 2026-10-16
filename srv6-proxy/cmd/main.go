@@ -4,7 +4,7 @@ package main
 import (
 	"fmt"
 	"net"
-
+	"slices"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 	"golang.zx2c4.com/wireguard/tun"
@@ -149,15 +149,21 @@ func addTestingRoutes(dstNet net.IPNet, tun netlink.Link) error {
 		sid1,
 		sid2,
 	}
-	ipv4Sids := reversed(append(sids, decapSidv4))
+	ipv4sids := append(sids, decapSidv4)
+	slices.Reverse(ipv4sids)
+	
 	route := &netlink.Route{
 		Dst:   &dstNet,
 		// Table: int(s.Vrf.Table),
 		Encap: &netlink.SEG6Encap{
 			Mode:     nl.SEG6_IPTUN_MODE_ENCAP,
-			Segments: ipv4Sids,
+			Segments: ipv4sids,
 		},
 		LinkIndex: tun.Attrs().Index,
+	}
+
+	err = netlink.RouteAdd(route); if err != nil {
+		return fmt.Errorf("failed to add encap route: %w", err)
 	}
 
 	return nil
@@ -271,6 +277,8 @@ func ensureRoutes(tun0iface netlink.Link, dstNet *net.IPNet, decap_name, encap_n
 	if err := netlink.RouteReplace(&route2); err != nil {
 		return fmt.Errorf("replace route in table %d: %w", table400, err)
 	}
+
+	return nil
 }
 
 func echoTunnel(dev tun.Device) error {
