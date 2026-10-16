@@ -234,8 +234,8 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 			// write packet buff: |------SRv6 Header----|--Packet-------------------------------|
 			packets[i] = append(header.ToByte(totalSize), bufs[i][offset : offset + sizes[i]]...)
 		}
-
-		nWrite, err := worker.tunDev.Write(packets, offset) // write tun tun file with virtio offset
+		log.Printf("offset=%d len=%d first=%#x ver=%d", offset, len(packets[0]), packets[0][VIRTIO_OFFSET], packets[0][VIRTIO_OFFSET]>>4)
+		nWrite, err := worker.tunDev.Write(packets, offset) // write to tun file with virtio offset
 		if err != nil {
 			log.Printf("%s: TUN write failed: %v", worker.ifaceName, err)
 			continue
