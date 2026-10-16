@@ -1,5 +1,5 @@
-//go:build linux
 package main
+/* //go:build linux
 
 import (
 	"fmt"
@@ -301,3 +301,4 @@ func echoTunnel(dev tun.Device) error {
 		}
 	}
 }
+ */
