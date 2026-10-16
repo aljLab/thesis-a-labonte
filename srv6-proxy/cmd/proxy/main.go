@@ -171,12 +171,12 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 			}
 		}
 		
-/* 		packets := make([][]byte, n)
+		packets := make([][]byte, n)
 		for i := range n {
-			packets[i] = bufs[i][:sizes[i]]
-		} */
+			packets[i] = bufs[i][offset:offset+sizes[i]] // offset might have changed if NextHeader == 43
+		}
 
-		nWrite, err := worker.tunDev.Write(bufs, offset) // offset might have changed if NextHeader == 43
+		nWrite, err := worker.tunDev.Write(packets, VIRTIO_OFFSET) 
 		if err != nil {
 			log.Printf("%s: TUN write failed: %v", worker.ifaceName, err)
 			continue
