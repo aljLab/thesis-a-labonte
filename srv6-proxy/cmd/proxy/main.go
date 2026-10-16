@@ -121,11 +121,21 @@ func readAndLogTun1Traffic(reader *SRv6ProxyReader) {
 }
 
 func readAndLogTraffic(reader *SRv6ProxyReader, prefix string) {
-	bufs := [][]byte{make([]byte, 65535)}
-	sizes := make([]int, 1)
+	offset := 16 // make at least room for virtio linux header
+	buffSize := 65535 //64Kib
+	mtu, _ := reader.tunDev.MTU();
+	log.Printf("MTU %d", mtu)
+
+	// create one buffer for each (potential) packet, each with offset + max package size (also for writing, GRO)
+	// todo: set different buffers for reading and writing: read buffers can be way smaller -> calc MTU for SRv6 + IFace used
+	bufs := make([][]byte, reader.tunDev.BatchSize())
+	for i := range bufs {
+		bufs[i] = make([]byte, offset + buffSize)
+	}
+	sizes := make([]int, reader.tunDev.BatchSize())
 
 	for {
-		n, err := reader.tunDev.Read(bufs, sizes, 0)
+		n, err := reader.tunDev.Read(bufs, sizes, offset)
 		if err != nil {
 			log.Printf("%s: TUN read failed: %v", reader.ifaceName, err)
 			return
@@ -138,10 +148,11 @@ func readAndLogTraffic(reader *SRv6ProxyReader, prefix string) {
 			}
 
 			version := packet[0] >> 4
+			nextHeader := packet[6]
 
 			log.Printf(
-				"%s %s: %d bytes, IPv%d",
-				prefix, reader.ifaceName, len(packet), version,
+				"%s %s: %d bytes, IPv%d, nextHeader: %d",
+				prefix, reader.ifaceName, len(packet), version, nextHeader,
 			)
 
 			// TODO: Parse packet and update/use reader.cache.
@@ -152,7 +163,7 @@ func readAndLogTraffic(reader *SRv6ProxyReader, prefix string) {
 			packets[i] = bufs[i][:sizes[i]]
 		}
 
-		nWrite, err := reader.tunDev.Write(packets, 0)
+		nWrite, err := reader.tunDev.Write(packets, offset)
 		if err != nil {
 			log.Printf("%s: TUN write failed: %v", reader.ifaceName, err)
 			continue
