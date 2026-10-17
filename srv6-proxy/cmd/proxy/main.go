@@ -189,8 +189,8 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 		for i := range bufs {
 			bufs[i] = bufs[i][:offset + sizes[i]]
 		}
-		log.Println("First Buffer in decap")
-		log.Println(bufs[0])
+		//log.Println("First Buffer in decap")
+		//log.Println(bufs[0])
 		//log.Printf("writing: bufs[0][%d:]", offset)
 		//log.Println(bufs[0][offset:])
 
@@ -263,7 +263,7 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 			bufs[i] = bufs[i][:VIRTIO_OFFSET + totalSize + sizes[i]]
 		}
 
-		log.Printf("Sending encapsulated: bufs[:n][offset:]")
+		log.Printf("Sending encapsulated: bufs[:n][offset:]: %d", bufs[0][VIRTIO_OFFSET:])
 		nWrite, err := worker.tunDev.Write(bufs[:n], VIRTIO_OFFSET) // write whole batch n back
 		if err != nil {
 			log.Printf("%s: TUN write failed: %v", worker.ifaceName, err)
@@ -299,8 +299,6 @@ func (w *SRv6ProxyWorker) processSRv6Header(packet []byte) (byte, error) {
 	totalHeaderBytes := hdrExtLen[0] * 8 + byte(48)
 	segmentListEndOffset := 48 + len(segmentList) * 16
 
-	log.Printf("totalHeaderBytes: %d (should be 48 + )", totalHeaderBytes)
-
 	updatedHeader := SRv6Header{
 		Start: [24]byte(start),
 		DstAddr: [16]byte(segmentList[activeSID]),
@@ -314,15 +312,12 @@ func (w *SRv6ProxyWorker) processSRv6Header(packet []byte) (byte, error) {
 		SegmentList: packet[48:segmentListEndOffset],
 		Tlvs: packet[segmentListEndOffset:totalHeaderBytes],
 	}
-	log.Printf("Locking Cache for writing")
+
 	w.cache.Mu.Lock()
 	w.cache.Header = updatedHeader
 	w.cache.TotalSize = int(totalHeaderBytes)
 	w.cache.Mu.Unlock()
-	/* log.Printf("Unlocked Cache for writing")
-	log.Printf("cached header: {%d, %d, %d, %d, %d, %d, %d, TLVs: %d}", updatedHeader.Start[:], updatedHeader.DstAddr[:], updatedHeader.NextHeader[0], updatedHeader.HdrExtLen[0], updatedHeader.RoutingType, updatedHeader.SegmentsLeft, updatedHeader.FirstSeg, updatedHeader.Tlvs)
-	log.Printf("w.cache.Header.ToByte(): %d", w.cache.Header.ToByte())
- */	// return the total length of the header
+	
 	return totalHeaderBytes, nil
 }
 
