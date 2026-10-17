@@ -161,7 +161,9 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 					totalHeaderBytes, _ := worker.processSRv6Header(packet)
 
 					offset = offset + int(totalHeaderBytes) // move offset by the length of outer ipv6 + srh
-				} 
+				} else {
+					offset = VIRTIO_OFFSET
+				}
 			}
 
 			if version == 4{
@@ -317,7 +319,7 @@ func (h *SRv6Header) ToByte() []byte {
 	bits = append(bits, h.Flags[0])
 	bits = append(bits, h.Tag[:]...)
 	bits = append(bits, h.SegmentList...)
-	bits = append(bits, h.Tlvs...)
-	log.Printf("Returning header: %d", bits)
+	// bits = append(bits, h.Tlvs...)
+	log.Printf("Returning header (w/o TLVs): %d", bits)
 	return bits
 }
