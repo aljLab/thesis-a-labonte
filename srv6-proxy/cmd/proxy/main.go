@@ -189,16 +189,9 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 	}
 }
 
-func (worker *SRv6ProxyWorker) encapTraffic(){
-	worker.cache.Mu.Lock()
-	totalSize := worker.cache.TotalSize
-	header := worker.cache.Header
-	worker.cache.Mu.Unlock()
-
-	log.Printf("cached header: {%s, %s, %d, %d, %d, %s, %s}", string(header.Start[:]), string(header.DstAddr[:]), header.NextHeader[0], header.HdrExtLen[0], header.RoutingType, header.SegmentsLeft, header.FirstSeg)
-	
-	offset := VIRTIO_OFFSET + totalSize // read into bufs with enough space for Virtio + SRv6 header 
-	buffSize := 65535 - offset//64Kib, but could be MTU
+func (worker *SRv6ProxyWorker) encapTraffic(){	
+	offset := VIRTIO_OFFSET  // read into bufs with enough space for Virtio + SRv6 header 
+	buffSize := 65535 - offset//64Kib, but could be MTU (watch out for GRO)
 
 	bufs := make([][]byte, worker.tunDev.BatchSize())
 	for i := range bufs {
@@ -207,14 +200,22 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 	sizes := make([]int, worker.tunDev.BatchSize())
 
 	for {
-		n, err := worker.tunDev.Read(bufs, sizes, offset)
+		log.Printf("Locking cache for reading")
+		worker.cache.Mu.Lock()
+		totalSize := worker.cache.TotalSize
+		header := worker.cache.Header
+		worker.cache.Mu.Unlock()
+
+		log.Printf("cached header: {%s, %s, %d, %d, %d, %s, %s}", string(header.Start[:]), string(header.DstAddr[:]), header.NextHeader[0], header.HdrExtLen[0], header.RoutingType, header.SegmentsLeft, header.FirstSeg)
+
+		n, err := worker.tunDev.Read(bufs, sizes, offset + totalSize)
 		if err != nil {
 			log.Printf("%s: TUN read failed: %v", worker.ifaceName, err)
 			return
 		}
 
 		for i := range n {
-			packet := bufs[i][offset : offset + sizes[i]]
+			packet := bufs[i][offset : offset + totalSize + sizes[i]]
 			if len(packet) == 0 {
 				continue
 			}
@@ -232,7 +233,7 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 			}
 
 			// copy the cached header into the buffer head room |---Free(virtio)---|------SRv6------|------Packet------|
-			copy(bufs[i][VIRTIO_OFFSET:offset], header.ToByte())
+			copy(bufs[i][VIRTIO_OFFSET:VIRTIO_OFFSET+totalSize], header.ToByte())
 
 		}
 		
@@ -314,6 +315,6 @@ func (h *SRv6Header) ToByte() []byte {
 	bits = append(bits, h.Tag[:]...)
 	bits = append(bits, h.SegmentList...)
 	bits = append(bits, h.Tlvs...)
-	
+	log.Printf("Returning header: %s", bits)
 	return bits
 }
