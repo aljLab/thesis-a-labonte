@@ -180,6 +180,8 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 		log.Println(bufs[0])
 		log.Println("Second Buffer in decap")
 		log.Println(bufs[1])
+		log.Printf("writing: bufs[0][%d:]", offset)
+		log.Println(bufs[0][offset:])
 		nWrite, err := worker.tunDev.Write(bufs, offset) // offset might have changed if NextHeader == 43
 		if err != nil {
 			log.Printf("%s: TUN write failed: %v", worker.ifaceName, err)
@@ -302,7 +304,7 @@ func (w *SRv6ProxyWorker) processSRv6Header(packet []byte) (byte, error) {
 	w.cache.Mu.Unlock()
 	log.Printf("Unlocked Cache for writing")
 	log.Printf("cached header: {%d, %d, %d, %d, %d, %d, %d}", updatedHeader.Start[:], updatedHeader.DstAddr[:], updatedHeader.NextHeader[0], updatedHeader.HdrExtLen[0], updatedHeader.RoutingType, updatedHeader.SegmentsLeft, updatedHeader.FirstSeg)
-	log.Printf("%d", updatedHeader.ToByte())
+	log.Printf("w.cache.Header.ToByte(): %d", w.cache.Header.ToByte())
 	// return the total length of the header
 	return totalHeaderBytes, nil
 }
@@ -318,6 +320,6 @@ func (h *SRv6Header) ToByte() []byte {
 	bits = append(bits, h.Tag[:]...)
 	bits = append(bits, h.SegmentList...)
 	bits = append(bits, h.Tlvs...)
-	log.Printf("Returning header: %s", bits)
+	log.Printf("Returning header: %d", bits)
 	return bits
 }
