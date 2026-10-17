@@ -122,11 +122,9 @@ func main() {
 func (worker *SRv6ProxyWorker) decapTraffic() {
 	offset := VIRTIO_OFFSET // make at least room for virtio linux header
 	buffSize := 65535 //64Kib
-	mtu, _ := worker.tunDev.MTU();
-	log.Printf("MTU %d", mtu)
 
 	// create one buffer for each (potential) packet, each with offset + max package size (also for writing, GRO)
-	// todo: set different buffers for reading and writing: read buffers can be way smaller -> calc MTU for SRv6 + IFace used
+	// reuse buffers to avoid alloc + copy for each packet
 	bufs := make([][]byte, worker.tunDev.BatchSize())
 	for i := range bufs {
 		bufs[i] = make([]byte, offset + buffSize)
@@ -171,16 +169,13 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 			}
 		}
 		
-		packets := make([][]byte, n)
+		/* packets := make([][]byte, n)
 		for i := range n {
 			packets[i] = bufs[i][offset:offset+sizes[i]] // offset might have changed if NextHeader == 43
 		}
+		*/
 
-		log.Printf("Cached Header Bytes%s", string(worker.cache.Header.ToByte(worker.cache.TotalSize)))
-
-		log.Printf("offset=%d len=%d first=%#x ver=%d", VIRTIO_OFFSET, len(packets[0]), packets[0][VIRTIO_OFFSET], packets[0][VIRTIO_OFFSET]>>4)
-
-		nWrite, err := worker.tunDev.Write(packets, VIRTIO_OFFSET) 
+		nWrite, err := worker.tunDev.Write(bufs, offset) // offset might have changed if NextHeader == 43
 		if err != nil {
 			log.Printf("%s: TUN write failed: %v", worker.ifaceName, err)
 			continue
@@ -196,8 +191,10 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 	totalSize := worker.cache.TotalSize
 	header := worker.cache.Header
 	worker.cache.Mu.Unlock()
+
+	log.Printf("cached header: {%s, %s, %d, %d, %d, %s, %s}", string(header.Start[:]), string(header.DstAddr[:]), header.NextHeader[0], header.HdrExtLen[0], header.RoutingType, header.SegmentsLeft, header.FirstSeg)
 	
-	offset := VIRTIO_OFFSET
+	offset := VIRTIO_OFFSET + totalSize // read into bufs with enough space for Virtio + SRv6 header 
 	buffSize := 65535 - offset//64Kib, but could be MTU
 
 	bufs := make([][]byte, worker.tunDev.BatchSize())
@@ -231,18 +228,21 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 				log.Printf("IPv4 %s ==> %s ", src, dst)
 			}
 
+			// copy the cached header into the buffer head room |---Free(virtio)---|------SRv6------|------Packet------|
+			copy(bufs[i][VIRTIO_OFFSET:offset], header.ToByte())
+
 		}
 		
-		packets := make([][]byte, n)
+		/* packets := make([][]byte, n)
 		for i := range n {
 			// write packet buff: |------SRv6 Header----|--Packet-------------------------------|
 			packets[i] = append(header.ToByte(totalSize), bufs[i][offset : offset + sizes[i]]...)
-		}
+		}*/
 
-		log.Printf("Header Bytes%s", string(header.ToByte(totalSize)))
+		log.Printf("Header Bytes%s", string(header.ToByte()))
 
-		log.Printf("offset=%d len=%d first=%#x ver=%d", VIRTIO_OFFSET, len(packets[0]), packets[0][0], packets[0][0]>>4)
-		nWrite, err := worker.tunDev.Write(packets, offset) // write to tun file with virtio offset
+		log.Printf("offset=%d len=%d first=%#x ver=%d", VIRTIO_OFFSET, len(bufs[0]), bufs[0][0], bufs[0][0]>>4)
+		nWrite, err := worker.tunDev.Write(bufs, VIRTIO_OFFSET) // write to tun file with virtio offset
 		if err != nil {
 			log.Printf("%s: TUN write failed: %v", worker.ifaceName, err)
 			continue
@@ -289,17 +289,18 @@ func (w *SRv6ProxyWorker) processSRv6Header(packet []byte) (byte, error) {
 		SegmentList: packet[48:segmentListEndOffset],
 		Tlvs: packet[segmentListEndOffset:],
 	}
-
+	log.Printf("Locking Cache for writing")
 	w.cache.Mu.Lock()
 	w.cache.Header = updatedHeader
 	w.cache.TotalSize = int(totalHeaderBytes)
 	w.cache.Mu.Unlock()
+	log.Printf("Unlocked Cache for writing")
 
 	// return the total length of the header
 	return totalHeaderBytes, nil
 }
 
-func (h *SRv6Header) ToByte(totalSize int) []byte {
+func (h *SRv6Header) ToByte() []byte {
 	bits := append(h.Start[:], h.DstAddr[:]...)
 	bits = append(bits, h.NextHeader[0])
 	bits = append(bits, h.HdrExtLen[0])
