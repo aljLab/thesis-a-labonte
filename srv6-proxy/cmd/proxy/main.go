@@ -186,26 +186,18 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 		for i := range bufs {
 			bufs[i] = bufs[i][:offset + sizes[i]]
 		}
-		//log.Println("First Buffer in decap")
-		//log.Println(bufs[0])
-		//log.Printf("writing: bufs[0][%d:]", offset)
-		//log.Println(bufs[0][offset:])
 
 		_, err = worker.tunDev.Write(bufs[:n], offset) // offset might have changed if NextHeader == 43
 		if err != nil {
 			log.Printf("%s: TUN write failed: %v", worker.ifaceName, err)
-			continue
 		}
-
-		//log.Printf("%s: wrote %d bytes", worker.ifaceName, nWrite)
-
 	}
 }
 
 func (worker *SRv6ProxyWorker) encapTraffic(){	
 	offset := VIRTIO_OFFSET
 	buffSize := 65535 - offset //64Kib, but could be MTU (watch out for GRO)
-	buffCount := 1// worker.tunDev.BatchSize()
+	buffCount := 1// worker.tunDev.BatchSize(); using 1 to avoid reading batches with packets that need encap and packets that don't
 
 	bufs := make([][]byte, buffCount)
 	for i := range bufs {
@@ -214,6 +206,7 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 	sizes := make([]int, buffCount)
 
 	for {
+		// TODO: check for TOCTOU
 		worker.cache.Mu.Lock()
 		totalSize := worker.cache.TotalSize
 		srv6Header := worker.cache.Header
@@ -224,9 +217,6 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 		for i := range bufs {
 			bufs[i] = bufs[i][:cap(bufs[i])]
 		}
-		
-		log.Printf("cached header: {%d}", srv6Header.ToByte())
-		log.Printf("cached header (raw): {%d}", raw)
 
 		n, err := worker.tunDev.Read(bufs, sizes, offset + totalSize) //read into buffers with extra space for srv6 header
 		if err != nil {
@@ -262,20 +252,16 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 			}
 		}
 
-		// shrink buffers to fit the packet
+		// shrink buffers to fit the packet sizes
 		for i := range bufs {
 			bufs[i] = bufs[i][:VIRTIO_OFFSET + totalSize + sizes[i]]
 		}
 
-		// log.Printf("Sending encapsulated: bufs[:n][offset:]: %d", bufs[0][VIRTIO_OFFSET:])
 		_, err = worker.tunDev.Write(bufs[:n], VIRTIO_OFFSET) // write whole batch n back
 		if err != nil {
 			log.Printf("%s: TUN write failed: %v", worker.ifaceName, err)
 			continue
 		}
-
-		// log.Printf("%s: wrote %d bytes", worker.ifaceName, nWrite)
-
 	}
 }
 
@@ -337,6 +323,5 @@ func (h *SRv6Header) ToByte() []byte {
 	bits = append(bits, h.Tag[:]...)
 	bits = append(bits, h.SegmentList...)
 	bits = append(bits, h.Tlvs...)
-	log.Printf("Returning header: %d", bits)
 	return bits
 }
