@@ -419,6 +419,18 @@ func SetupRoutesAndRules(Tun0, Tun1 string) error {
 		return err
 	}
 
+	// 7. Route to 10.0.20.0/24 network via tun1 -> encap testing:
+	//
+	//    IPv4 packets received with dst 10.0.20.0/24
+	//        -> tun1
+	if err := ensureRoute(&netlink.Route{
+		LinkIndex: tun1.Attrs().Index,
+		Dst:       mustCIDR("10.0.20.0/24"),
+		Family:    netlink.FAMILY_V4,
+	}); err != nil {
+		return err
+	}
+
 	return nil
 }
 
