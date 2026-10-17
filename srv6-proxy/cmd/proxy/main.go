@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"log"
 	"sync"
 
@@ -213,7 +214,6 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 	sizes := make([]int, buffCount)
 
 	for {
-		log.Printf("Locking cache for reading")
 		worker.cache.Mu.Lock()
 		totalSize := worker.cache.TotalSize
 		srv6Header := worker.cache.Header
@@ -258,7 +258,7 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 
 			if needsEncap {
 				// copy the cached header into the buffer head room |---Free(virtio)---|------SRv6------|------Packet------|
-				copy(bufs[i][VIRTIO_OFFSET:VIRTIO_OFFSET+totalSize], srv6Header.ToByte())
+				copy(bufs[i][VIRTIO_OFFSET:VIRTIO_OFFSET+totalSize], raw)
 			}
 		}
 
@@ -313,8 +313,8 @@ func (w *SRv6ProxyWorker) processSRv6Header(packet []byte) (byte, error) {
 		FirstSeg: [1]byte(lastIndex),
 		Flags: [1]byte(flags),
 		Tag: [2]byte(tag),
-		SegmentList: packet[48:segmentListEndOffset],
-		Tlvs: packet[segmentListEndOffset:totalHeaderBytes],
+		SegmentList: bytes.Clone(packet[48:segmentListEndOffset]), // clone explicitly
+		Tlvs: bytes.Clone(packet[segmentListEndOffset:totalHeaderBytes]),
 	}
 
 	w.cache.Mu.Lock()
