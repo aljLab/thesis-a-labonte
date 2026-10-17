@@ -265,7 +265,7 @@ func (w *SRv6ProxyWorker) processSRv6Header(packet []byte) (byte, error) {
 	start := packet[:24]
 	_ = packet[24:40]
 	innerNextHeader := packet[40:41]
-	hdrExtLen := packet[41:42] // length of segments + options in octets
+	hdrExtLen := packet[41:42] // length of segments + options in 8-octets
 	routingType := packet[42:43]
 	segmentsLeft := packet[43:44] // points to active segment
 	lastIndex := packet[44:45] // = FirstSegment
@@ -282,8 +282,11 @@ func (w *SRv6ProxyWorker) processSRv6Header(packet []byte) (byte, error) {
 	// decrement segmentsLeft
 	// copy segmentList[segmentsLeft] into dst of outer
 	activeSID := segmentsLeft[0] - 1
-	totalHeaderBytes := hdrExtLen[0] + byte(48)
+	totalHeaderBytes := hdrExtLen[0] * 8 + byte(48)
 	segmentListEndOffset := 48 + len(segmentList) * 16
+
+	log.Printf("totalHeaderBytes: %d (should be 48 + )", totalHeaderBytes)
+
 	updatedHeader := SRv6Header{
 		Start: [24]byte(start),
 		DstAddr: [16]byte(segmentList[activeSID]),
@@ -303,7 +306,7 @@ func (w *SRv6ProxyWorker) processSRv6Header(packet []byte) (byte, error) {
 	w.cache.TotalSize = int(totalHeaderBytes)
 	w.cache.Mu.Unlock()
 	log.Printf("Unlocked Cache for writing")
-	log.Printf("cached header: {%d, %d, %d, %d, %d, %d, %d}", updatedHeader.Start[:], updatedHeader.DstAddr[:], updatedHeader.NextHeader[0], updatedHeader.HdrExtLen[0], updatedHeader.RoutingType, updatedHeader.SegmentsLeft, updatedHeader.FirstSeg)
+	log.Printf("cached header: {%d, %d, %d, %d, %d, %d, %d, TLVs: %d}", updatedHeader.Start[:], updatedHeader.DstAddr[:], updatedHeader.NextHeader[0], updatedHeader.HdrExtLen[0], updatedHeader.RoutingType, updatedHeader.SegmentsLeft, updatedHeader.FirstSeg, updatedHeader.Tlvs)
 	log.Printf("w.cache.Header.ToByte(): %d", w.cache.Header.ToByte())
 	// return the total length of the header
 	return totalHeaderBytes, nil
@@ -319,7 +322,7 @@ func (h *SRv6Header) ToByte() []byte {
 	bits = append(bits, h.Flags[0])
 	bits = append(bits, h.Tag[:]...)
 	bits = append(bits, h.SegmentList...)
-	// bits = append(bits, h.Tlvs...)
+	bits = append(bits, h.Tlvs...)
 	log.Printf("Returning header (w/o TLVs): %d", bits)
 	return bits
 }
