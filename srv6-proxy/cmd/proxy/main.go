@@ -48,7 +48,7 @@ const (
 	tun0 = "tun0"
 	tun1 = "tun1"
 	MTU  = 1294
-	VIRTIO_OFFSET = 16
+	VIRTIO_OFFSET = 10
 )
 
 func main() {
@@ -144,6 +144,8 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 				continue
 			}
 
+			log.Printf("Read packet with length: %d", len(packet))
+
 			version := packet[0] >> 4
 			log.Printf(
 				"==> %s: %d bytes, IPv%d",
@@ -174,7 +176,8 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 			packets[i] = bufs[i][offset:offset+sizes[i]] // offset might have changed if NextHeader == 43
 		}
 		*/
-
+		log.Println("First Buffer in decap")
+		log.Println(bufs[0])
 		nWrite, err := worker.tunDev.Write(bufs, offset) // offset might have changed if NextHeader == 43
 		if err != nil {
 			log.Printf("%s: TUN write failed: %v", worker.ifaceName, err)
