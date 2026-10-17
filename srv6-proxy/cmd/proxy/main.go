@@ -28,6 +28,7 @@ type SRv6Header struct {
 type SRHCache struct {
 	Header      SRv6Header
 	TotalSize   int
+	Raw         []byte
 	Mu          sync.Mutex // change to RWLock
 }
 
@@ -162,9 +163,11 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 
 				// decap SRv6 SRH and cache
 				if nextHeader == 43 {
-					totalHeaderBytes, _ := worker.processSRv6Header(packet)
+					if packet[42:43][0] == 4 {
+						totalHeaderBytes, _ := worker.processSRv6Header(packet)
 
-					offset = offset + int(totalHeaderBytes) // move offset by the length of outer ipv6 + srh
+						offset = offset + int(totalHeaderBytes) // move offset by the length of outer ipv6 + srh
+					}
 				} else {
 					offset = VIRTIO_OFFSET
 				}
@@ -214,14 +217,16 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 		worker.cache.Mu.Lock()
 		totalSize := worker.cache.TotalSize
 		srv6Header := worker.cache.Header
+		raw := worker.cache.Raw
 		worker.cache.Mu.Unlock()
 
 		// resize buffers to original capacity
 		for i := range bufs {
 			bufs[i] = bufs[i][:cap(bufs[i])]
 		}
-
+		
 		log.Printf("cached header: {%d}", srv6Header.ToByte())
+		log.Printf("cached header (raw): {%d}", raw)
 
 		n, err := worker.tunDev.Read(bufs, sizes, offset + totalSize) //read into buffers with extra space for srv6 header
 		if err != nil {
@@ -314,6 +319,7 @@ func (w *SRv6ProxyWorker) processSRv6Header(packet []byte) (byte, error) {
 
 	w.cache.Mu.Lock()
 	w.cache.Header = updatedHeader
+	w.cache.Raw = updatedHeader.ToByte()
 	w.cache.TotalSize = int(totalHeaderBytes)
 	w.cache.Mu.Unlock()
 	
@@ -331,6 +337,6 @@ func (h *SRv6Header) ToByte() []byte {
 	bits = append(bits, h.Tag[:]...)
 	bits = append(bits, h.SegmentList...)
 	bits = append(bits, h.Tlvs...)
-	// log.Printf("Returning header: %d", bits)
+	log.Printf("Returning header: %d", bits)
 	return bits
 }
