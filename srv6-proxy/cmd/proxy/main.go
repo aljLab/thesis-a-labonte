@@ -4,7 +4,6 @@ package main
 
 import (
 	"log"
-	"net/netip"
 	"sync"
 
 	"golang.zx2c4.com/wireguard/tun"
@@ -154,8 +153,7 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 
 			version := packet[0] >> 4
 			log.Printf(
-				"==> %s: %d bytes, IPv%d",
-				worker.ifaceName, len(packet), version,
+				"==> %s: %d bytes, IPv%d", worker.ifaceName, len(packet), version,
 			)
 
 			if version == 6 {
@@ -172,11 +170,6 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 				}
 			}
 
-			if version == 4{
-				src, _ := netip.AddrFromSlice(packet[12:16])
-				dst, _ := netip.AddrFromSlice(packet[16:20])
-				log.Printf("IPv4 %s ==> %s ", src, dst)
-			}
 		}
 		
 		/* packets := make([][]byte, n)
@@ -194,13 +187,13 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 		//log.Printf("writing: bufs[0][%d:]", offset)
 		//log.Println(bufs[0][offset:])
 
-		nWrite, err := worker.tunDev.Write(bufs[:n], offset) // offset might have changed if NextHeader == 43
+		_, err = worker.tunDev.Write(bufs[:n], offset) // offset might have changed if NextHeader == 43
 		if err != nil {
 			log.Printf("%s: TUN write failed: %v", worker.ifaceName, err)
 			continue
 		}
 
-		log.Printf("%s: wrote %d bytes", worker.ifaceName, nWrite)
+		//log.Printf("%s: wrote %d bytes", worker.ifaceName, nWrite)
 
 	}
 }
@@ -244,20 +237,16 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 
 			needsEncap := true
 			version := packet[0] >> 4
-			log.Printf(
-				"<== %s: %d bytes, IPv%d",
-				worker.ifaceName, len(packet), version,
-			)
-
-			if version == 4{
-				src, _ := netip.AddrFromSlice(packet[12:16])
-				dst, _ := netip.AddrFromSlice(packet[16:20])
-				log.Printf("IPv4 %s ==> %s ", src, dst)
-			}
+			log.Printf("<== %s: %d bytes, IPv%d", worker.ifaceName, len(packet), version,)
 
 			if version == 6 {
 				// hlim = 1 packets are not encapped (maybe drop?)
 				if packet[7] == 1 {
+					needsEncap = false
+				}
+
+				// check if cached header is valid
+				if srv6Header.Start[0]>>4 != 6 {
 					needsEncap = false
 				}
 			}
@@ -273,14 +262,14 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 			bufs[i] = bufs[i][:VIRTIO_OFFSET + totalSize + sizes[i]]
 		}
 
-		log.Printf("Sending encapsulated: bufs[:n][offset:]: %d", bufs[0][VIRTIO_OFFSET:])
-		nWrite, err := worker.tunDev.Write(bufs[:n], VIRTIO_OFFSET) // write whole batch n back
+		// log.Printf("Sending encapsulated: bufs[:n][offset:]: %d", bufs[0][VIRTIO_OFFSET:])
+		_, err = worker.tunDev.Write(bufs[:n], VIRTIO_OFFSET) // write whole batch n back
 		if err != nil {
 			log.Printf("%s: TUN write failed: %v", worker.ifaceName, err)
 			continue
 		}
 
-		log.Printf("%s: wrote %d bytes", worker.ifaceName, nWrite)
+		// log.Printf("%s: wrote %d bytes", worker.ifaceName, nWrite)
 
 	}
 }
@@ -342,6 +331,6 @@ func (h *SRv6Header) ToByte() []byte {
 	bits = append(bits, h.Tag[:]...)
 	bits = append(bits, h.SegmentList...)
 	bits = append(bits, h.Tlvs...)
-	log.Printf("Returning header: %d", bits)
+	// log.Printf("Returning header: %d", bits)
 	return bits
 }
