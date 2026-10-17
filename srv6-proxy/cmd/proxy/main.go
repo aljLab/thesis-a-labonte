@@ -242,6 +242,7 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 				continue
 			}
 
+			needsEncap := true
 			version := packet[0] >> 4
 			log.Printf(
 				"<== %s: %d bytes, IPv%d",
@@ -254,8 +255,17 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 				log.Printf("IPv4 %s ==> %s ", src, dst)
 			}
 
-			// copy the cached header into the buffer head room |---Free(virtio)---|------SRv6------|------Packet------|
-			copy(bufs[i][VIRTIO_OFFSET:VIRTIO_OFFSET+totalSize], srv6Header.ToByte())
+			if version == 6 {
+				// hlim = 1 packets are not encapped (maybe drop?)
+				if packet[7] == 1 {
+					needsEncap = false
+				}
+			}
+
+			if needsEncap {
+				// copy the cached header into the buffer head room |---Free(virtio)---|------SRv6------|------Packet------|
+				copy(bufs[i][VIRTIO_OFFSET:VIRTIO_OFFSET+totalSize], srv6Header.ToByte())
+			}
 		}
 
 		// shrink buffers to fit the packet
