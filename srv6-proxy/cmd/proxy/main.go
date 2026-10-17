@@ -178,11 +178,9 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 		*/
 		log.Println("First Buffer in decap")
 		log.Println(bufs[0])
-		log.Println("Second Buffer in decap")
-		log.Println(bufs[1])
 		log.Printf("writing: bufs[0][%d:]", offset)
 		log.Println(bufs[0][offset:])
-		nWrite, err := worker.tunDev.Write(bufs, offset) // offset might have changed if NextHeader == 43
+		nWrite, err := worker.tunDev.Write(bufs[:n], offset) // offset might have changed if NextHeader == 43
 		if err != nil {
 			log.Printf("%s: TUN write failed: %v", worker.ifaceName, err)
 			continue
@@ -250,7 +248,7 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 		log.Printf("Header Bytes%s", string(header.ToByte()))
 
 		log.Printf("offset=%d len=%d first=%#x ver=%d", VIRTIO_OFFSET, len(bufs[0]), bufs[0][0], bufs[0][0]>>4)
-		nWrite, err := worker.tunDev.Write(bufs, VIRTIO_OFFSET) // write to tun file with virtio offset
+		nWrite, err := worker.tunDev.Write(bufs[:n], VIRTIO_OFFSET) // write to tun file with virtio offset
 		if err != nil {
 			log.Printf("%s: TUN write failed: %v", worker.ifaceName, err)
 			continue
