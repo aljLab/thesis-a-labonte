@@ -48,7 +48,7 @@ const (
 	tun0 = "tun0"
 	tun1 = "tun1"
 	MTU  = 1294
-	VIRTIO_OFFSET = 10
+	VIRTIO_OFFSET = 16
 )
 
 func main() {
@@ -121,7 +121,7 @@ func main() {
 
 func (worker *SRv6ProxyWorker) decapTraffic() {
 	offset := VIRTIO_OFFSET // make at least room for virtio linux header
-	buffSize := 65535 //64Kib
+	buffSize := 2500 // 65535 //64Kib
 
 	// create one buffer for each (potential) packet, each with offset + max package size (also for writing, GRO)
 	// reuse buffers to avoid alloc + copy for each packet
