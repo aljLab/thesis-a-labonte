@@ -299,6 +299,7 @@ func (w *SRv6ProxyWorker) processSRv6Header(packet []byte) (byte, error) {
 	w.cache.TotalSize = int(totalHeaderBytes)
 	w.cache.Mu.Unlock()
 	log.Printf("Unlocked Cache for writing")
+	log.Printf("cached header: {%s, %s, %d, %d, %d, %s, %s}", string(updatedHeader.Start[:]), string(updatedHeader.DstAddr[:]), updatedHeader.NextHeader[0], updatedHeader.HdrExtLen[0], updatedHeader.RoutingType, updatedHeader.SegmentsLeft, updatedHeader.FirstSeg)
 
 	// return the total length of the header
 	return totalHeaderBytes, nil
