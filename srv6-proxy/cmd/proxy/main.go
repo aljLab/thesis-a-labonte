@@ -133,6 +133,11 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 	sizes := make([]int, buffCount)
 
 	for {
+		// resize buffers to original capacity for reading
+		for i := range bufs {
+			bufs[i] = bufs[i][:cap(bufs[i])]
+		}
+
 		n, err := worker.tunDev.Read(bufs, sizes, offset)
 		if err != nil {
 			log.Printf("%s: TUN read failed: %v", worker.ifaceName, err)
@@ -217,6 +222,11 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 		totalSize := worker.cache.TotalSize
 		srv6Header := worker.cache.Header
 		worker.cache.Mu.Unlock()
+
+		// resize buffers to original capacity
+		for i := range bufs {
+			bufs[i] = bufs[i][:cap(bufs[i])]
+		}
 
 		log.Printf("cached header: {%d}", srv6Header.ToByte())
 
