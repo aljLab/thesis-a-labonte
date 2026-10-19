@@ -122,7 +122,7 @@ func main() {
 
 func (worker *SRv6ProxyWorker) decapTraffic() {
 	offset := VIRTIO_OFFSET // make at least room for virtio linux header
-	buffSize := 2500 // 65535 //64Kib
+	buffSize := 65535 //64Kib
 	buffCount := 1 // worker.tunDev.BatchSize()
 
 	// create one buffer for each (potential) packet, each with offset + max package size (also for writing, GRO)
