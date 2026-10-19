@@ -67,6 +67,7 @@ func main() {
 	}
 	defer tun1dev.Close()
 
+	
 	// get names of actual interfaces
 	tun0name, err := tun0dev.Name()
 	if err != nil {
@@ -77,7 +78,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("get tun1 name: %v", err)
 	}
-
+	
 	// Set up all interfaces tun0, tun1, decap4, for devel: veth-pair
 	setup.SetupLinks(tun0name, tun1name)
 

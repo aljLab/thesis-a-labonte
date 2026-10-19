@@ -108,7 +108,43 @@ func ensureVethPair() error {
 		return fmt.Errorf("create veth pair: %w", err)
 	}
 
-	fmt.Printf("created veth pair: %s <-> %s\n", VethIn, VethOut)
+	// get links by name
+	linkIn, err := netlink.LinkByName(VethIn)
+	if err != nil {
+		return fmt.Errorf("get link %s: %w", VethIn, err)
+	}
+
+	linkOut, err := netlink.LinkByName(VethOut)
+	if err != nil {
+		return fmt.Errorf("get link %s: %w", VethOut, err)
+	}
+
+	// assign IP addresses in the same subnet
+	for _, cfg := range []struct {
+		link netlink.Link
+		cidr string
+	}{
+		{link: linkIn, cidr: "10.30.0.2/30"},
+		{link: linkOut, cidr: "10.30.0.1/30"},
+	} {
+		addr, err := netlink.ParseAddr(cfg.cidr)
+		if err != nil {
+			return fmt.Errorf("parse address %s: %w", cfg.cidr, err)
+		}
+
+		if err := netlink.AddrAdd(cfg.link, addr); err != nil {
+			return fmt.Errorf("assign %s to %s: %w", cfg.cidr, cfg.link.Attrs().Name, err)
+		}
+
+		if err := netlink.LinkSetUp(cfg.link); err != nil {
+			return fmt.Errorf("bring up %s: %w", cfg.link.Attrs().Name, err)
+		}
+	}
+
+	fmt.Printf(
+		"created veth pair: %s (10.30.0.2/30) <-> %s (10.30.0.1/30)\n",
+		VethIn, VethOut,
+	)
 	return nil
 }
 
@@ -223,31 +259,10 @@ func ConfigureSysctls(Tun0, Tun1 string) error {
 	); err != nil {
 		return err
 	}
-
-	// disable rp_filter (v4)
-	if err := writeSysctl(
-		"/proc/sys/net/ipv4/conf/tun0/rp_filter", "0",
-	); err != nil {
-		return err
-	}
-
-	// disable rp_filter (v4)
-	if err := writeSysctl(
-		"/proc/sys/net/ipv4/conf/tun1/rp_filter", "0",
-	); err != nil {
-		return err
-	}
-
-	// allow local
-	if err := writeSysctl(
-		"/proc/sys/net/ipv4/conf/all/allow_local", "1",
-	); err != nil {
-		return err
-	}
-
+	
 	/*
 	sysctl -w net.conf.ipv4.{all,tun0,tun1,veth-in,veth-out}.rp_filter=0
-	sysctl -w net.conf.ipv4.{all,tun0,tun1,veth-in,veth-out},accept_local=1
+	sysctl -w net.conf.ipv4.{tun0,tun1,veth-in,veth-out},accept_local=1
 
 	ip addr add 10.30.0.2/30 dev veth-in
 	ip addr add 10.30.0.1/30 dev veth-out
@@ -255,9 +270,46 @@ func ConfigureSysctls(Tun0, Tun1 string) error {
 	ip route replace default via 10.30.0.1/30 dev veth-in
 	*/
 
+
+	ifaces := []string{Tun0, Tun1, "veth-in", "veth-out"}
+
+	for _, iface := range ifaces {
+		if err := writeSysctl(
+			fmt.Sprintf("/proc/sys/net/ipv4/conf/%s/rp_filter", iface), "0",
+		); err != nil {
+			return err
+		}
+
+		if err := writeSysctl(
+			fmt.Sprintf("/proc/sys/net/ipv4/conf/%s/accept_local", iface), "1",
+		); err != nil {
+			return err
+		}
+	}
+
 	for _, name := range []string{Tun0, Tun1, VethIn, VethOut, Decap4} {
 		path := "/proc/sys/net/ipv6/conf/" + name + "/seg6_enabled"
 		if err := writeSysctl(path, "1"); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func EnsureTunConfig(tun0, tun1 string) error {
+	ifaces := []string{tun0, tun1}
+
+	for _, iface := range ifaces {
+		if err := writeSysctl(
+			fmt.Sprintf("/proc/sys/net/ipv4/conf/%s/rp_filter", iface), "0",
+		); err != nil {
+			return err
+		}
+
+		if err := writeSysctl(
+			fmt.Sprintf("/proc/sys/net/ipv4/conf/%s/accept_local", iface), "1",
+		); err != nil {
 			return err
 		}
 	}
@@ -364,10 +416,11 @@ func SetupRoutesAndRules(Tun0, Tun1 string) error {
 	//        -> default route
 	//        -> veth-in
 	//
-	// Device route: no gateway and no veth IP addresses.
+	// Device route: gw is veth peer with 10.30.0.1
 	if err := ensureRoute(&netlink.Route{
 		LinkIndex: vethIn.Attrs().Index,
-		Dst:       mustCIDR("0.0.0.0/0"),
+		Gw:        net.IPv4(10, 30, 0, 1),
+		Dst:       mustCIDR("0.0.0.0/30"),
 		Table:     TableTun0,
 		Family:    netlink.FAMILY_V4,
 	}); err != nil {
