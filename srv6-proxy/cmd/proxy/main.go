@@ -235,6 +235,7 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 			log.Printf("<== %s: %d bytes, IPv%d", worker.ifaceName, len(packet), version,)
 
 			if version == 6 {
+				// filter NTPv4 and others?
 				// hlim = 1 packets are not encapped (maybe drop?)
 				if packet[7] == 1 {
 					needsEncap = false
