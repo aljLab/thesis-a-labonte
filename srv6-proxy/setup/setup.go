@@ -231,12 +231,29 @@ func ConfigureSysctls(Tun0, Tun1 string) error {
 		return err
 	}
 
-	// allow local
+	// disable rp_filter (v4)
 	if err := writeSysctl(
-		"/proc/sys/net/ipv4/conf/all/allow_local", "0",
+		"/proc/sys/net/ipv4/conf/tun1/rp_filter", "0",
 	); err != nil {
 		return err
 	}
+
+	// allow local
+	if err := writeSysctl(
+		"/proc/sys/net/ipv4/conf/all/allow_local", "1",
+	); err != nil {
+		return err
+	}
+
+	/*
+	sysctl -w net.conf.ipv4.{all,tun0,tun1,veth-in,veth-out}.rp_filter=0
+	sysctl -w net.conf.ipv4.{all,tun0,tun1,veth-in,veth-out},accept_local=1
+
+	ip addr add 10.30.0.2/30 dev veth-in
+	ip addr add 10.30.0.1/30 dev veth-out
+
+	ip route replace default via 10.30.0.1/30 dev veth-in
+	*/
 
 	for _, name := range []string{Tun0, Tun1, VethIn, VethOut, Decap4} {
 		path := "/proc/sys/net/ipv6/conf/" + name + "/seg6_enabled"
