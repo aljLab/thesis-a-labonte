@@ -4,6 +4,8 @@ package main
 
 import (
 	"bytes"
+	"flag"
+	"fmt"
 	"log"
 	"sync"
 
@@ -53,6 +55,11 @@ const (
 )
 
 func main() {
+	devel := *flag.Bool("development", false, "Development toggle: determines whether or not to create infrastructure when starting the proxy.")
+
+	flag.Parse()
+
+
 	// Create TUN devices
 	tun0dev, err := tun.CreateTUN(tun0, MTU)
 	if err != nil {
@@ -80,17 +87,19 @@ func main() {
 	}
 	
 	// Set up all interfaces tun0, tun1, decap4, for devel: veth-pair
-	setup.SetupLinks(tun0name, tun1name)
+	setup.SetupLinks(tun0name, tun1name, devel)
 
-	// ensure the system allows srv6 and vrf
-	setup.ConfigureSysctls(tun0name, tun1name)
+	if devel {
+		// ensure the system allows srv6 and vrf
+		setup.ConfigureSysctls(tun0name, tun1name)
 
-	// add routes for development:
-	// 10.0.10.0/24 encap seg6 mode encap segs 2 [ fd00:2 fd00:3 ] dev tun0
-	// table 200: default dev veth-in
-	// table 201: default dev tun1
-	// fd::03 encap seg6local action END.DT4 vrftable main dev decap4 table 202
-	setup.SetupRoutesAndRules(tun0name, tun1name)
+		// add routes for development:
+		// 10.0.10.0/24 encap seg6 mode encap segs 2 [ fd00:2 fd00:3 ] dev tun0
+		// table 200: default dev veth-in
+		// table 201: default dev tun1
+		// fd::03 encap seg6local action END.DT4 vrftable main dev decap4 table 202
+		setup.SetupRoutesAndRules(tun0name, tun1name)
+	}
 
 	cache := &SRHCache{}
 
@@ -166,7 +175,10 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 				// decap SRv6 SRH and cache
 				if nextHeader == 43 {
 					if packet[42:43][0] == 4 {
-						totalHeaderBytes, _ := worker.processSRv6Header(packet)
+						totalHeaderBytes, err := worker.processSRv6Header(packet); if err != nil {
+							fmt.Printf("Encountered error when performing decap: %s. Skipping.", err)
+							continue
+						}
 
 						offset = offset + int(totalHeaderBytes) // move offset by the length of outer ipv6 + srh
 					}
@@ -177,11 +189,7 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 
 		}
 		
-		/* packets := make([][]byte, n)
-		for i := range n {
-			packets[i] = bufs[i][offset:offset+sizes[i]] // offset might have changed if NextHeader == 43
-		}
-		*/
+		// WRITE DECAPSULATED PACKETS BACK TO TUN DEVICE
 		
 		// shrink buffers to avoid sending filler 0's
 		for i := range bufs {
@@ -268,6 +276,7 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 }
 
 func (w *SRv6ProxyWorker) processSRv6Header(packet []byte) (byte, error) {
+	// TODO: add range sanity check to avoid panicking on index-oo-range
 	start := packet[:24]
 	_ = packet[24:40]
 	innerNextHeader := packet[40:41]
@@ -287,9 +296,13 @@ func (w *SRv6ProxyWorker) processSRv6Header(packet []byte) (byte, error) {
 
 	// decrement segmentsLeft
 	// copy segmentList[segmentsLeft] into dst of outer
+	if segmentsLeft[0] < 1 {
+		return 0, fmt.Errorf("Received frame addressed to last segment. Not Caching.")
+	}
 	activeSID := segmentsLeft[0] - 1
 	totalHeaderBytes := hdrExtLen[0] * 8 + byte(48)
 	segmentListEndOffset := 48 + len(segmentList) * 16
+
 
 	updatedHeader := SRv6Header{
 		Start: [24]byte(start),

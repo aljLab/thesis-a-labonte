@@ -259,7 +259,7 @@ func ConfigureSysctls(Tun0, Tun1 string) error {
 	); err != nil {
 		return err
 	}
-	
+
 	/*
 	sysctl -w net.conf.ipv4.{all,tun0,tun1,veth-in,veth-out}.rp_filter=0
 	sysctl -w net.conf.ipv4.{tun0,tun1,veth-in,veth-out},accept_local=1
@@ -297,53 +297,28 @@ func ConfigureSysctls(Tun0, Tun1 string) error {
 	return nil
 }
 
-func EnsureTunConfig(tun0, tun1 string) error {
-	ifaces := []string{tun0, tun1}
-
-	for _, iface := range ifaces {
-		if err := writeSysctl(
-			fmt.Sprintf("/proc/sys/net/ipv4/conf/%s/rp_filter", iface), "0",
-		); err != nil {
-			return err
-		}
-
-		if err := writeSysctl(
-			fmt.Sprintf("/proc/sys/net/ipv4/conf/%s/accept_local", iface), "1",
-		); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 // -----------------------------------------------------------------------------
 // Interface creation
 // -----------------------------------------------------------------------------
 
-func SetupLinks(Tun0, Tun1 string) error {
-	/* TUN devices: raw IP packets, no packet-information header.
-	// for _, name := range []string{Tun0, Tun1} {
-		if err := ensureLink(&netlink.Tuntap{
-			LinkAttrs: netlink.LinkAttrs{Name: name},
-			Mode:      netlink.TUNTAP_MODE_TUN,
-			Flags:     netlink.TUNTAP_NO_PI,
-		}); err != nil {
+func SetupLinks(Tun0, Tun1 string, devel bool) error {
+
+	ifaces := []string{Tun0, Tun1}
+
+	if devel {
+		if err := ensureVethPair(); err != nil {
 			return err
 		}
-	}*/
+		// decap4 is the VRF device used by the End.DT4 action.
+		if err := ensureVRF(Decap4, uint32(MainTable)); err != nil {
+			return err
+		}
 
-	// An unnumbered veth pair. No IP addresses are assigned.
-	if err := ensureVethPair(); err != nil {
-		return err
+		ifaces = append(ifaces, VethIn, VethOut, Decap4)
 	}
 
-	// decap4 is the VRF device used by the End.DT4 action.
-	if err := ensureVRF(Decap4, uint32(MainTable)); err != nil {
-		return err
-	}
 
-	for _, name := range []string{Tun0, Tun1, VethIn, VethOut, Decap4} {
+	for _, name := range ifaces {
 		if err := ensureUp(name); err != nil {
 			return err
 		}
@@ -420,7 +395,7 @@ func SetupRoutesAndRules(Tun0, Tun1 string) error {
 	if err := ensureRoute(&netlink.Route{
 		LinkIndex: vethIn.Attrs().Index,
 		Gw:        net.IPv4(10, 30, 0, 1),
-		Dst:       mustCIDR("0.0.0.0/30"),
+		Dst:       mustCIDR("0.0.0.0/0"),
 		Table:     TableTun0,
 		Family:    netlink.FAMILY_V4,
 	}); err != nil {
