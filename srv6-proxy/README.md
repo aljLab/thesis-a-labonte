@@ -60,3 +60,19 @@ e.g.:
 iptables -I DOCKER-USER 1 -i tun0 -o enp94s0f0np0 -j ACCEPT
 iptables -I DOCKER-USER 1 -i enp5es0f0s5 -o tun1 -j ACCEPT
 ```
+
+### Example PCAPs
+
+- `tun0`: encapsulated packet enters -> reenters decapsulated
+```
+12:51:18.809866 IP6 2001:610:2d0:200:ae1f:6bff:fe5a:42d2 > fd00::2: RT6 (len=4, type=4, segleft=1, last-entry=1, tag=0, [0]fd00::3, [1]fd00::2) IP 145.100.131.34 > 10.50.0.3: ICMP echo request, id 36, seq 1, length 64
+
+12:51:18.810094 IP 145.100.131.34 > 10.50.0.3: ICMP echo request, id 36, seq 1, length 64
+```
+
+- `tun1`: packet enters and gets re-encapsulated in tun1 (note the updated destination/segleft fields)
+```
+12:51:18.810209 IP 145.100.131.34 > 10.50.0.3: ICMP echo request, id 36, seq 1, length 64
+
+12:51:18.810332 IP6 2001:610:2d0:200:ae1f:6bff:fe5a:42d2 > fd00::3: RT6 (len=4, type=4, segleft=0, last-entry=1, tag=0, [0]fd00::3, [1]fd00::2) IP 145.100.131.34 > 10.50.0.3: ICMP echo request, id 36, seq 1, length 64
+```
