@@ -81,7 +81,7 @@ struct parsed_srh {
     struct ipv6_sr_hdr *srh;
     __u32 srh_len;
     __u32 outer_len;
-    __u16 next_proto;
+    __u8 next_proto[2];
 };
 
 static __always_inline int
@@ -126,10 +126,10 @@ parse_srh(struct xdp_md *ctx, struct parsed_srh *p)
     p->outer_len = sizeof(struct ipv6hdr) + p->srh_len;
     
     // get the inner IP version
-    if((void *)(const __u8 *)p->srh + srh_len + 8 > end) // +8 or without? does end point to the last byte or the first non-buffer byte?
+    if((void *)(const __u8 *)p->srh + p->srh_len + 8 > end) // +8 or without? does end point to the last byte or the first non-buffer byte?
         return -1;
 
-    __u8 version = (*(const __u8 *)((const __u8 *)p->srh + srh_len)) >> 4;
+    __u8 version = (*(const __u8 *)((const __u8 *)p->srh + p->srh_len)) >> 4;
 
     // find the next proto value based on the version
     if (version == 6){
@@ -151,11 +151,14 @@ static __always_inline int
 select_slot(struct parsed_srh *p, __u32 *slot)
 {
     // determine which slot to use from srh: hash the header % N -> optimize by choosing subset of header
+    // optimally the assignment is uniformly distributed
     __u32 hash = FNV1_32_INIT;
+
+    const __u8 *bytes = (const __u8 *)p->srh;
 
     #pragma unroll
     for (int i = 0; i < p->srh_len; i++) {
-        hash ^= p[i];
+        hash ^= bytes[i];
         hash *= FNV_32_PRIME;
     }
 
@@ -187,11 +190,11 @@ int decap(struct xdp_md *ctx)
         return XDP_PASS;
     
     // decrement segmentsLeft and update the DA 
-    if (srh_advance(p->ipv6, p->srh) < 0)
+    if (srh_advance(p.ip6, p.srh) < 0)
         return XDP_DROP;
 
     __u32 slot;
-    if (select_slot(p.srh, &slot) < 0)
+    if (select_slot(&p, &slot) < 0)
         return XDP_PASS;
 
     if (p.outer_len > MAX_CACHED_HDR)

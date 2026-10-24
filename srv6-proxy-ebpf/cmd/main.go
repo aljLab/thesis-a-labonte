@@ -33,8 +33,8 @@ func main() {
     cfg := config{
         iml0: "iml0",
 
-        toVNF:   []string{"veth-in", "veth-in-1"},
-        fromVNF: []string{"veth-out", "veth-out-1"},
+        toVNF:   []string{"veth-in0", "veth-in1"},
+        fromVNF: []string{"veth-out0", "veth-out1"},
 
         gatewayMAC: "02:00:00:00:00:01",
     }
@@ -76,7 +76,7 @@ func main() {
     defer os.RemoveAll(tmp)
 
     baseObj := filepath.Join(tmp, "base.o")
-    compileBPF(ctx, "../pkg/ebpf/proxy.c", baseObj, n, 0)
+    compileBPF(ctx, "pkg/ebpf/proxy.c", baseObj, n, 0)
 
     spec, err := ebpf.LoadCollectionSpec(baseObj)
     if err != nil {
@@ -179,7 +179,7 @@ func main() {
         obj := filepath.Join(tmp, fmt.Sprintf("encap-%d.o", i))
 
         // compile program again, passing in the index of each fromVNF interface (nf(i/2)) for correct SRH lookup
-		compileBPF(ctx, "../pkg/ebpf/proxy.c", obj, n, i)
+		compileBPF(ctx, "pkg/ebpf/proxy.c", obj, n, i)
 
         encapSpec, err := ebpf.LoadCollectionSpec(obj)
         if err != nil {
