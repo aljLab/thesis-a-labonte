@@ -133,11 +133,11 @@ parse_srh(struct xdp_md *ctx, struct parsed_srh *p)
 
     // find the next proto value based on the version
     if (version == 6){
-        p.next_proto = ETH_P_IPV6;
+        p->next_proto = ETH_P_IPV6;
     }
     else if (version == 4)
     {
-        p.next_proto = ETH_P_IP;
+        p->next_proto = ETH_P_IP;
     }
     else
     {
@@ -256,7 +256,7 @@ int decap(struct xdp_md *ctx)
 
     __builtin_memcpy(eth->h_source, src_mac->addr, 6);
     __builtin_memcpy(eth->h_dest, dst_mac->addr, 6);
-    __builtin_memcpy(&eth.h_proto, p.next_proto, 2);
+    __builtin_memcpy(eth->h_proto, &p.next_proto, 2);
 
     /*
     * FIND OUTGOING INTERFACE'S LINK INDEX
