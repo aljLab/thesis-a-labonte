@@ -256,7 +256,7 @@ int decap(struct xdp_md *ctx)
 
     __builtin_memcpy(eth->h_source, src_mac->addr, 6);
     __builtin_memcpy(eth->h_dest, dst_mac->addr, 6);
-    __builtin_memcpy(eth->h_proto, &p.next_proto, 2);
+    eth->h_proto = bpf_htons(p.next_proto);
 
     /*
     * FIND OUTGOING INTERFACE'S LINK INDEX
