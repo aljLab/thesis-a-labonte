@@ -81,7 +81,7 @@ struct parsed_srh {
     struct ipv6_sr_hdr *srh;
     __u32 srh_len;
     __u32 outer_len;
-    __u8 next_proto[2];
+    __u16 next_proto;
 };
 
 static __always_inline int
@@ -133,15 +133,15 @@ parse_srh(struct xdp_md *ctx, struct parsed_srh *p)
 
     // find the next proto value based on the version
     if (version == 6){
-        p->next_proto = ETH_P_IPV6;
+        p.next_proto = ETH_P_IPV6;
     }
     else if (version == 4)
     {
-        p->next_proto = ETH_P_IP;
+        p.next_proto = ETH_P_IP;
     }
     else
     {
-        return -1
+        return -1;
     }
 
     return 0;
@@ -256,7 +256,7 @@ int decap(struct xdp_md *ctx)
 
     __builtin_memcpy(eth->h_source, src_mac->addr, 6);
     __builtin_memcpy(eth->h_dest, dst_mac->addr, 6);
-    __builtin_memcpy(eth->h_proto, p->next_proto, 2);
+    __builtin_memcpy(&eth.h_proto, p.next_proto, 2);
 
     /*
     * FIND OUTGOING INTERFACE'S LINK INDEX
@@ -302,7 +302,7 @@ int encap(struct xdp_md *ctx)
     if ((void *)(inner_eth + 1) > end)
         return XDP_DROP;
 
-    __u16 inner_proto = eth->h_proto;
+    __u16 inner_proto = inner_eth->h_proto;
     __u32 inner_len = (__u32)((char *)end - (char *)data) - sizeof(struct ethhdr);
 
     __u8 inner_nexthdr;
