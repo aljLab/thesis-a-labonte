@@ -3,6 +3,7 @@ package main
 
 import (
     "context"
+	"errors"
     "fmt"
     "log"
     "net"
@@ -11,6 +12,7 @@ import (
     "path/filepath"
     "runtime"
     "strconv"
+	"strings"
 
     "github.com/cilium/ebpf"
     "github.com/cilium/ebpf/link"
@@ -83,11 +85,25 @@ func main() {
         log.Fatal("load base spec: ", err)
     }
 
-    base, err := ebpf.NewCollection(spec)
-    if err != nil {
-        log.Fatal("load base collection: ", err)
-    }
-    defer base.Close()
+    base, err := ebpf.NewCollectionWithOptions(
+		spec,
+		ebpf.CollectionOptions{
+				Programs: ebpf.ProgramOptions{
+					LogLevel: ebpf.LogLevelInstruction |
+						ebpf.LogLevelBranch |
+						ebpf.LogLevelStats,
+				},
+            },
+	)
+    var ve *ebpf.VerifierError
+	if errors.As(err, &ve) {
+		fmt.Printf("Verifier log (%d lines):\n", len(ve.Log))
+		fmt.Println(strings.Join(ve.Log, "\n"))
+		os.Exit(-1);
+	} else {
+		log.Printf("Load error: %+v", err)
+		defer base.Close()
+	}
 
     srhMap := base.Maps["srh_table"]
     linkMap := base.Maps["link_index_table"]
@@ -224,6 +240,13 @@ func main() {
         if err != nil {
             log.Fatalf("attach encap to %s: %v", iface.Name, err)
         }
+		var ve *ebpf.VerifierError
+		if errors.As(err, &ve) {
+			fmt.Printf("Verifier log (%d lines):\n", len(ve.Log))
+			fmt.Println(strings.Join(ve.Log, "\n"))
+		} else {
+			log.Printf("Load error: %+v", err)
+		}
 
         links = append(links, l)
 
