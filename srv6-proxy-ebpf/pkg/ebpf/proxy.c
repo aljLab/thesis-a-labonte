@@ -343,10 +343,11 @@ int encap(struct xdp_md *ctx)
     // __builtin_memcpy((char *)data + sizeof(struct ethhdr), cached->bytes, hdr_len);
     __builtin_memcpy((char *)data + sizeof(struct ethhdr), cached->bytes, sizeof(struct ipv6hdr));
 
-    const __u8 *skb_srh = (__u8 *)data + sizeof(struct ethhdr) + sizeof(struct ipv6hdr);
+    __u8 *skb_srh = (__u8 *)data + sizeof(struct ethhdr) + sizeof(struct ipv6hdr);
     const __u8 *cached_srh_bytes = (__u8 *) (cached->bytes + sizeof(struct ipv6hdr));
 
-    const __u32 srh_len = header_len - sizeof(struct ipv6hdr)
+    __u32 srh_len = hdr_len - sizeof(struct ipv6hdr);
+
     #pragma unroll
     for(int i = 0; i < MAX_SRH_LEN; i++){
         if ((__u32)i > srh_len)
@@ -357,6 +358,7 @@ int encap(struct xdp_md *ctx)
 
     bpf_spin_unlock(&cached->lock);
 
+    /* REPARSE PACKET AND UPDATE HEADER VALUES THAT MIGHT HAVE CHANGED */
     data = (void *)(long)ctx->data;
     end  = (void *)(long)ctx->data_end;
 
@@ -367,19 +369,16 @@ int encap(struct xdp_md *ctx)
         return XDP_DROP;
 
     struct ipv6_sr_hdr *srh = (void *)(ip6 + 1);
-    __u32 srh_len = hdr_len - sizeof(struct ipv6hdr);
+    srh_len = hdr_len - sizeof(struct ipv6hdr);
 
     if ((void *)srh + srh_len > end)
         return XDP_DROP;
 
-    /* Rebuild outer IPv6/SRH length and next-header fields. */
-    ip6->nexthdr = IPPROTO_ROUTING;
-    ip6->payload_len = bpf_htons(
-        srh_len + inner_len);
-
+    // ip6->nexthdr = IPPROTO_ROUTING;
+    ip6->payload_len = bpf_htons(srh_len + inner_len);
     srh->nexthdr = inner_nexthdr;
 
-     __u32 src_key, dst_key;
+    __u32 src_key, dst_key;
     src_key = 2*N ; // iml0
     dst_key = 2*N + 1; // gw
 
