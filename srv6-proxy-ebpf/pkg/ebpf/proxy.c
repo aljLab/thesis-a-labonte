@@ -212,7 +212,7 @@ int decap(struct xdp_md *ctx)
     const __u8 *srh_bytes = (__u8 *)p.srh; // points to new SRH in skb
     // __builtin_memcpy(cached_srh, p.srh, p.srh_len); -> memcopy rejected by compiler -> copy byte by byte
     #pragma unroll
-    for(int i = 0; i < MAX_CACHED_HDR; i++){
+    for(int i = 0; i < MAX_SRH_LEN; i++){
         if((__u32)i >= p.srh_len)
             break;
         cached->bytes[sizeof(struct ipv6hdr) + i] = srh_bytes[i];
@@ -273,8 +273,7 @@ int encap(struct xdp_md *ctx)
     if (slot >= N)
         return XDP_ABORTED;
 
-    struct cached_outer *cached =
-        bpf_map_lookup_elem(&srh_table, &slot);
+    struct cached_outer *cached = bpf_map_lookup_elem(&srh_table, &slot);
 
     // drop all packets if no encapsulation header is set
     if (!cached)
@@ -309,7 +308,7 @@ int encap(struct xdp_md *ctx)
     else
         return XDP_PASS;
 
-    if (inner_len + hdr_len - sizeof(struct ipv6hdr) > 65535)
+    if (inner_len + hdr_len - sizeof(struct ipv6hdr) > 65535) // why subtracting sizeof(ipv6hdr)?
         return XDP_DROP;
 
     // |---FREE---|---ETH---|---INNER_IP---|
@@ -335,13 +334,26 @@ int encap(struct xdp_md *ctx)
     bpf_spin_lock(&cached->lock);
 
     if (cached->len != hdr_len) {
-        // header length changed after reading length
+        // header length changed after reading length -> packet would be incorrectly encaped -> DROP
         bpf_spin_unlock(&cached->lock);
         return XDP_DROP;
     }
 
     // |--ETH--|---SRv6---|---INNER_IP---|
-    __builtin_memcpy((char *)data + sizeof(struct ethhdr), cached->bytes, hdr_len);
+    // __builtin_memcpy((char *)data + sizeof(struct ethhdr), cached->bytes, hdr_len);
+    __builtin_memcpy((char *)data + sizeof(struct ethhdr), cached->bytes, sizeof(struct ipv6hdr));
+
+    const __u8 *skb_srh = (__u8 *)data + sizeof(struct ethhdr) + sizeof(struct ipv6hdr);
+    const __u8 *cached_srh_bytes = (__u8 *) (cached->bytes + sizeof(struct ipv6hdr));
+
+    const __u32 srh_len = header_len - sizeof(struct ipv6hdr)
+    #pragma unroll
+    for(int i = 0; i < MAX_SRH_LEN; i++){
+        if ((__u32)i > srh_len)
+            break;
+        
+        skb_srh[i] = cached_srh_bytes[i];
+    }
 
     bpf_spin_unlock(&cached->lock);
 
