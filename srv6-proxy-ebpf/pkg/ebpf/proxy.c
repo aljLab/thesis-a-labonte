@@ -392,7 +392,7 @@ int encap(struct xdp_md *ctx)
 
     // get ready to copy cached header into skb:  
     __u8 *skb_srh = (__u8 *)data + sizeof(struct ethhdr) + sizeof(struct ipv6hdr);
-    const __u8 *cached_srh_bytes = (__u8 *) (cached->bytes + sizeof(struct ipv6hdr));
+    const __u8 *cached_srh_bytes = (__u8 *)cached->bytes + sizeof(struct ipv6hdr);
     __u32 srh_len = hdr_len - sizeof(struct ipv6hdr);
 
     // prove: packet is spacious enough for an extra header of len srh_len
@@ -400,8 +400,11 @@ int encap(struct xdp_md *ctx)
         return XDP_DROP;
 
     // prove: cached outer header has enough cached bytes to satisfy srh_len reads
-    if(cached_srh_bytes + srh_len > (__u8 *)cached + sizeof(struct cached_outer))
+    //if(cached_srh_bytes + srh_len > (__u8 *)cached + sizeof(struct cached_outer))
+    //    return XDP_DROP;
+    if (srh_len > sizeof(cached->bytes) - sizeof(struct ipv6hdr))
         return XDP_DROP;
+
     bpf_spin_lock(&cached->lock);
     #pragma unroll
     for(int i = 0; i < MAX_SRH_LEN; i++){
