@@ -168,7 +168,7 @@ select_slot(struct parsed_srh *p, __u32 *slot)
 static __always_inline int
 srh_advance(struct ipv6hdr *ip6, struct ipv6_sr_hdr *srh, void *data_end)
 {
-    if (srh->segments_left == 0)
+    /*if (srh->segments_left == 0)
         return -1;
 
     // prove that segments[segsLeft] is in packet bounds
@@ -185,6 +185,42 @@ srh_advance(struct ipv6hdr *ip6, struct ipv6_sr_hdr *srh, void *data_end)
         return -1;
 
     __builtin_memcpy(&ip6->daddr, &srh->segments[seg_idx], sizeof(ip6->daddr));
+
+    return 0;*/
+
+    __u32 left = srh->segments_left;
+    __u32 first = srh->first_segment;
+
+    if (left == 0)
+        return -1;
+
+    // The valid original range is 1 .. first_segment + 1.
+    if (left - 1 > first)
+        return -1;
+
+    // RFC SRH processing: decrement first, then use
+    // Segment List[Segments Left].
+    __u32 seg_idx = left - 1;
+
+    // Bound the index for the verifier and limit it to the SRH.
+    if (seg_idx >= MAX_SRH_LEN / sizeof(struct in6_addr))
+        return -1;
+
+    __u32 seg_offset =
+        sizeof(struct ipv6_sr_hdr) +
+        seg_idx * sizeof(struct in6_addr);
+
+    if (seg_offset + sizeof(struct in6_addr) > srh_len)
+        return -1;
+
+    const __u8 *seg = (const __u8 *)srh + seg_offset;
+
+    if (seg + sizeof(struct in6_addr) > (const __u8 *)data_end)
+        return -1;
+
+    // All checks passed; now update the packet.
+    srh->segments_left = left - 1;
+    __builtin_memcpy(&ip6->daddr, seg, sizeof(ip6->daddr));
 
     return 0;
 }
