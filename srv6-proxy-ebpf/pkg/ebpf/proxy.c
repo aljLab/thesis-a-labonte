@@ -230,18 +230,23 @@ int decap(struct xdp_md *ctx)
     if (!cached) 
         return XDP_DROP;
 
-    // prove reading in packet bounds
+    /*
+    PREPARE TO READ THE INCOMING OUTER IPv6 + SRH INTO CACHE MAP
+    */
+   // prove reading in packet bounds
+   //if ((void *)(p.ip6 + 1) > end) -> checked in parse_srh()
+   //    return XDP_DROP;
+
+   // p.srh_len <= MAX_SRH_LEN
     if (p.srh_len > MAX_SRH_LEN)
         return XDP_DROP;
     
     const __u8 *srh_bytes = (const __u8 *)p.srh;
     
+    // p.srh_len is not bigger than the rest of the packet after the outer IPv6 header
     if (srh_bytes + p.srh_len > (const __u8 *)end)
         return XDP_DROP;
     
-    if ((void *)(p.ip6 + 1) > end)
-        return XDP_DROP;
-        
     // prove copying within cached bounds
     if (sizeof(struct ipv6hdr) + p.srh_len > sizeof(cached->bytes))
         return XDP_DROP;
@@ -257,6 +262,11 @@ int decap(struct xdp_md *ctx)
         for(int i = 0; i < MAX_SRH_LEN; i++){
             if((__u32)i >= p.srh_len)
                 break;
+
+            if (srh_bytes + i + 1 > (const __u8 *)end) {
+                bpf_spin_unlock(&cached->lock);
+                return XDP_DROP;
+            }
             cached->bytes[sizeof(struct ipv6hdr) + i] = srh_bytes[i];
     }
 
@@ -265,6 +275,9 @@ int decap(struct xdp_md *ctx)
     * MOVE + UPDATE ETHERNET HEADER
     */
     void *data = (void *)(long)ctx->data; // stack +4
+
+    // if((char *)data + p.outer_len + sizeof(struct ethhdr) <= (char *)end)
+    //    return XDP_DROP;
 
     __builtin_memcpy((char *)data + p.outer_len, p.eth, sizeof(struct ethhdr));
 
