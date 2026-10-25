@@ -19,7 +19,6 @@
 #define FNV_32_PRIME 0x01000193
 #define FNV1_32_INIT 0x811C9DC5
 
-/* Logical slot i corresponds to toVNF[i] and fromVNF[i]. */
 struct cached_outer {
     struct bpf_spin_lock lock;
     __u16 len;
@@ -39,10 +38,6 @@ struct {
     __type(value, struct cached_outer);
 } srh_table SEC(".maps");
 
-/*
- * Keys 0..n-1: toVNF output interface indices.
- * Key 2*n:     iml0 interface index.
- */
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 2 * N + 1);
@@ -50,18 +45,20 @@ struct {
     __type(value, __u32);
 } link_index_table SEC(".maps");
 
-/*
- * Keys 0..n-1: MAC addresses configured for toVNF slots.
- * Keys n..2n-1: MAC addresses configured for fromVNF slots.
- * Key 2*n:     iml0 MAC.
- * Key 2*n+1:   gateway MAC.
- */
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 2 * N + 2);
     __type(key, __u32);
     __type(value, struct mac_entry);
 } mac_addr_table SEC(".maps");
+
+/* use this per-cpu map to move the parsed srh into while decaping
+struct {
+    __uint(type, BPF_MAP_PERCPU_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct parsed_srh);
+} scratch_table SEC(".maps");*/
 
 struct ipv6_sr_hdr {
 	__u8	nexthdr;
@@ -124,7 +121,7 @@ parse_srh(struct xdp_md *ctx, struct parsed_srh *p)
         return -1;
 
     p->outer_len = sizeof(struct ipv6hdr) + p->srh_len;
-    
+
     // get the inner IP version
     if((void *)(const __u8 *)p->srh + p->srh_len + 8 > end) // +8 or without? does end point to the last byte or the first non-buffer byte?
         return -1;
@@ -147,7 +144,7 @@ parse_srh(struct xdp_md *ctx, struct parsed_srh *p)
     return 0;
 }
 
-static __always_inline int
+static __always_inline int // try not inlining here to clean up unused variables with stack frame on return
 select_slot(struct parsed_srh *p, __u32 *slot)
 {
     // determine which slot to use from srh: hash the header % N -> optimize by choosing subset of header
@@ -184,7 +181,7 @@ srh_advance(struct ipv6hdr *ip6, struct ipv6_sr_hdr *srh)
 SEC("xdp")
 int decap(struct xdp_md *ctx)
 {
-    struct parsed_srh p = {};
+    struct parsed_srh p = {}; // stack +20
 
     if (parse_srh(ctx, &p) < 0)
         return XDP_PASS;
@@ -193,7 +190,7 @@ int decap(struct xdp_md *ctx)
     if (srh_advance(p.ip6, p.srh) < 0)
         return XDP_DROP;
 
-    __u32 slot;
+    __u32 slot; // stack
     if (select_slot(&p, &slot) < 0)
         return XDP_PASS;
 
@@ -203,21 +200,10 @@ int decap(struct xdp_md *ctx)
     /**
      * LOOKUP CACHED HEADER -> UPDATE OR INIT
      */
-    struct cached_outer *cached =
-        bpf_map_lookup_elem(&srh_table, &slot);
+    struct cached_outer *cached = bpf_map_lookup_elem(&srh_table, &slot); // stack +4
 
     if (!cached) 
-    {
-        struct cached_outer initial = {};
-
-        long ret = bpf_map_update_elem(
-            &srh_table, &slot, &initial, BPF_NOEXIST);
-
-        cached = bpf_map_lookup_elem(&srh_table, &slot);
-
-        if (!cached)
-            return XDP_DROP;
-    }
+        return XDP_DROP;
 
     bpf_spin_lock(&cached->lock);
 
@@ -229,21 +215,21 @@ int decap(struct xdp_md *ctx)
     /*
     * MOVE + UPDATE ETHERNET HEADER
     */
-    void *data = (void *)(long)ctx->data;
+    void *data = (void *)(long)ctx->data; // stack +4
 
     __builtin_memcpy((char *)data + p.outer_len, p.eth, sizeof(struct ethhdr));
 
     if (bpf_xdp_adjust_head(ctx, p.outer_len) < 0) // shrink buffer (front) by sizeof(IPv6+SRH)
         return XDP_DROP;
 
-    data = (void *)(long)ctx->data;
-    void *end = (void *)(long)ctx->data_end;
+    data = (void *)(long)ctx->data; // stack +0
+    void *end = (void *)(long)ctx->data_end; // stack +4
 
     struct ethhdr *eth = data;
     if ((void *)(eth + 1) > end)
         return XDP_DROP;
 
-    __u32 src_key, dst_key;
+    __u32 src_key, dst_key; // stack +8
     src_key = slot; 
     dst_key = N + slot;
 

@@ -92,6 +92,7 @@ func main() {
     srhMap := base.Maps["srh_table"]
     linkMap := base.Maps["link_index_table"]
     macMap := base.Maps["mac_addr_table"]
+    // scratchMap := base.Maps["mac_addr_table"]
 
     if srhMap == nil || linkMap == nil || macMap == nil {
         log.Fatal("expected BPF maps are missing")
@@ -138,6 +139,13 @@ func main() {
     if err := macMap.Put(uint32(2*n+1), paddedMAC(gatewayMAC)); err != nil {
         log.Fatal("populate gateway MAC: ", err)
     }
+
+	// scratch map initialization
+	// zero value of size 
+	/* if err := scratchMap.Put(uint32(20), [20]byte{}); err != nil {
+		log.Fatal("init scratch 0able: ", err)
+	} */
+
 	/*
     * Attach decap to iml0
 	*/
