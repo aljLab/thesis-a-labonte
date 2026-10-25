@@ -154,7 +154,9 @@ select_slot(struct parsed_srh *p, __u32 *slot)
     const __u8 *bytes = (const __u8 *)p->srh;
 
     #pragma unroll
-    for (int i = 0; i < p->srh_len; i++) {
+    for (int i = 0; i < MAX_SRH_LEN; i++) {
+        if((__u32)i < p->srh_len)
+            break;
         hash ^= bytes[i];
         hash *= FNV_32_PRIME;
     }
@@ -381,9 +383,9 @@ int encap(struct xdp_md *ctx)
     if((char *)data + sizeof(struct ethhdr) + sizeof(struct ipv6hdr) > (char *)end)
         return XDP_DROP;
     
-    if((char *)cached->bytes + sizeof(struct ipv6hdr) > sizeof(struct cached_outer))
-        return XDP_DROP;
-        
+    //if((char *)cached->bytes + sizeof(struct ipv6hdr) > (char *)cached + sizeof(struct cached_outer))
+    //    return XDP_DROP;
+
     __builtin_memcpy((char *)data + sizeof(struct ethhdr), cached->bytes, sizeof(struct ipv6hdr));
 
     __u8 *skb_srh = (__u8 *)data + sizeof(struct ethhdr) + sizeof(struct ipv6hdr);
