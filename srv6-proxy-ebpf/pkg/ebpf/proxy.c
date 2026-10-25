@@ -166,14 +166,25 @@ select_slot(struct parsed_srh *p, __u32 *slot)
 
 
 static __always_inline int
-srh_advance(struct ipv6hdr *ip6, struct ipv6_sr_hdr *srh)
+srh_advance(struct ipv6hdr *ip6, struct ipv6_sr_hdr *srh, void *data_end)
 {
     if (srh->segments_left == 0)
         return -1;
 
-    srh->segments_left--;
+    // prove that segments[segsLeft] is in packet bounds
 
-    __builtin_memcpy(&ip6->daddr, &srh->segments[srh->segments_left], sizeof(ip6->daddr));
+    // first_segment == lastindex == len(segList) - 1 -> drop if more segmentsLeft than exist
+    if(srh->segments_left > srh->first_segment)
+        return -1;
+
+    // calculate expected read offset from SRH (base + idx*segmentSize)
+    __u32 seg_idx = (__u32)srh->segments_left - 1;
+    __u32 seg_offset = sizeof(struct ipv6_sr_hdr) + seg_idx * sizeof(struct in6_addr);
+
+    if ((char *)srh + seg_offset + sizeof(struct in6_addr) > (char *)data_end)
+        return -1;
+
+    __builtin_memcpy(&ip6->daddr, &srh->segments[seg_idx], sizeof(ip6->daddr));
 
     return 0;
 }
@@ -182,12 +193,13 @@ SEC("xdp")
 int decap(struct xdp_md *ctx)
 {
     struct parsed_srh p = {}; // stack +20
-
-    if (parse_srh(ctx, &p) < 0)
-        return XDP_PASS;
     
+    if (parse_srh(ctx, &p) < 0)
+    return XDP_PASS;
+    
+    void *end  = (void *)(long)ctx->data_end;
     // decrement segmentsLeft and update the DA 
-    if (srh_advance(p.ip6, p.srh) < 0)
+    if (srh_advance(p.ip6, p.srh, end) < 0)
         return XDP_DROP;
 
     __u32 slot; // stack
@@ -211,7 +223,6 @@ int decap(struct xdp_md *ctx)
         return XDP_DROP;
     
     const __u8 *shr_bytes = (const __u8 *)p.srh;
-    void *end  = (void *)(long)ctx->data_end;
     
     if (shr_bytes + p.srh_len > (const __u8 *)end)
         return XDP_DROP;
