@@ -230,7 +230,6 @@ int decap(struct xdp_md *ctx)
     if (!cached) 
         return XDP_DROP;
 
-    
     // prove reading in packet bounds
     if (p.srh_len > MAX_SRH_LEN)
         return XDP_DROP;
@@ -244,9 +243,8 @@ int decap(struct xdp_md *ctx)
         return XDP_DROP;
         
     // prove copying within cache bounds
-    if((void *)cached->bytes + sizeof(struct ipv6hdr) + p.srh_len > end)
+    if((void *)cached->bytes + sizeof(struct ipv6hdr) + p.srh_len > (void *)cached + sizeof(struct cached_outer))
         return XDP_DROP;
-
 
     bpf_spin_lock(&cached->lock);
         cached->len = p.outer_len;
