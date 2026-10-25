@@ -166,7 +166,7 @@ select_slot(struct parsed_srh *p, __u32 *slot)
 
 
 static __always_inline int
-srh_advance(struct ipv6hdr *ip6, struct ipv6_sr_hdr *srh, void *data_end)
+srh_advance(struct ipv6hdr *ip6, struct ipv6_sr_hdr *srh, void *data_end, __u32 srh_len)
 {
     /*if (srh->segments_left == 0)
         return -1;
@@ -206,9 +206,7 @@ srh_advance(struct ipv6hdr *ip6, struct ipv6_sr_hdr *srh, void *data_end)
     if (seg_idx >= MAX_SRH_LEN / sizeof(struct in6_addr))
         return -1;
 
-    __u32 seg_offset =
-        sizeof(struct ipv6_sr_hdr) +
-        seg_idx * sizeof(struct in6_addr);
+    __u32 seg_offset = sizeof(struct ipv6_sr_hdr) + seg_idx * sizeof(struct in6_addr);
 
     if (seg_offset + sizeof(struct in6_addr) > srh_len)
         return -1;
@@ -219,7 +217,7 @@ srh_advance(struct ipv6hdr *ip6, struct ipv6_sr_hdr *srh, void *data_end)
         return -1;
 
     // All checks passed; now update the packet.
-    srh->segments_left = left - 1;
+    // srh->segments_left = left - 1;
     __builtin_memcpy(&ip6->daddr, seg, sizeof(ip6->daddr));
 
     return 0;
@@ -235,7 +233,7 @@ int decap(struct xdp_md *ctx)
     
     void *end  = (void *)(long)ctx->data_end;
     // decrement segmentsLeft and update the DA 
-    if (srh_advance(p.ip6, p.srh, end) < 0)
+    if (srh_advance(p.ip6, p.srh, end, p.srh_len) < 0)
         return XDP_DROP;
 
     __u32 slot; // stack
