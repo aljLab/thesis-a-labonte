@@ -168,38 +168,15 @@ select_slot(struct parsed_srh *p, __u32 *slot)
 static __always_inline int
 srh_advance(struct ipv6hdr *ip6, struct ipv6_sr_hdr *srh, void *data_end, __u32 srh_len)
 {
-    /*if (srh->segments_left == 0)
-        return -1;
-
-    // prove that segments[segsLeft] is in packet bounds
-
-    // first_segment == lastindex == len(segList) - 1 -> drop if more segmentsLeft than exist
-    if(srh->segments_left > srh->first_segment)
-        return -1;
-
-    // calculate expected read offset from SRH (base + idx*segmentSize)
-    __u32 seg_idx = (__u32)srh->segments_left - 1;
-    __u32 seg_offset = sizeof(struct ipv6_sr_hdr) + seg_idx * sizeof(struct in6_addr);
-
-    if ((char *)srh + seg_offset + sizeof(struct in6_addr) > (char *)data_end)
-        return -1;
-
-    __builtin_memcpy(&ip6->daddr, &srh->segments[seg_idx], sizeof(ip6->daddr));
-
-    return 0;*/
-
     __u32 left = srh->segments_left;
     __u32 first = srh->first_segment;
 
     if (left == 0)
         return -1;
 
-    // The valid original range is 1 .. first_segment + 1.
     if (left - 1 > first)
         return -1;
 
-    // RFC SRH processing: decrement first, then use
-    // Segment List[Segments Left].
     __u32 seg_idx = left - 1;
 
     // Bound the index for the verifier and limit it to the SRH.
@@ -401,7 +378,12 @@ int encap(struct xdp_md *ctx)
     }
 
     // |--ETH--|---SRv6---|---INNER_IP---|
-    // __builtin_memcpy((char *)data + sizeof(struct ethhdr), cached->bytes, hdr_len);
+    if((char *)data + sizeof(struct ethhdr) + sizeof(struct ipv6hdr) > (char *)end)
+        return XDP_DROP;
+    
+    if((char *)cached->bytes + sizeof(struct ipv6hdr) > sizeof(struct cached_outer))
+        return XDP_DROP;
+        
     __builtin_memcpy((char *)data + sizeof(struct ethhdr), cached->bytes, sizeof(struct ipv6hdr));
 
     __u8 *skb_srh = (__u8 *)data + sizeof(struct ethhdr) + sizeof(struct ipv6hdr);
