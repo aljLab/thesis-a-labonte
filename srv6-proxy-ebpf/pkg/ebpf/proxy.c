@@ -234,17 +234,20 @@ int decap(struct xdp_md *ctx)
     if (p.srh_len > MAX_SRH_LEN)
         return XDP_DROP;
     
-    const __u8 *shr_bytes = (const __u8 *)p.srh;
+    const __u8 *srh_bytes = (const __u8 *)p.srh;
     
-    if (shr_bytes + p.srh_len > (const __u8 *)end)
+    if (srh_bytes + p.srh_len > (const __u8 *)end)
         return XDP_DROP;
     
     if ((void *)(p.ip6 + 1) > end)
         return XDP_DROP;
         
-    // prove copying within cache bounds
-    if((void *)cached->bytes + sizeof(struct ipv6hdr) + p.srh_len > (void *)cached + sizeof(struct cached_outer))
+    // prove copying within cached bounds
+    if (sizeof(struct ipv6hdr) + p.srh_len > sizeof(cached->bytes))
         return XDP_DROP;
+
+    //if((void *)cached->bytes + sizeof(struct ipv6hdr) + p.srh_len > (void *)cached + sizeof(struct cached_outer))
+     //   return XDP_DROP;
 
     bpf_spin_lock(&cached->lock);
         cached->len = p.outer_len;
@@ -254,7 +257,7 @@ int decap(struct xdp_md *ctx)
         for(int i = 0; i < MAX_SRH_LEN; i++){
             if((__u32)i >= p.srh_len)
                 break;
-            cached->bytes[sizeof(struct ipv6hdr) + i] = shr_bytes[i];
+            cached->bytes[sizeof(struct ipv6hdr) + i] = srh_bytes[i];
     }
 
     bpf_spin_unlock(&cached->lock);
