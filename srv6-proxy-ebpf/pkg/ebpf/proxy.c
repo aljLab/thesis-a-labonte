@@ -350,7 +350,7 @@ int encap(struct xdp_md *ctx)
 
     #pragma unroll
     for(int i = 0; i < MAX_SRH_LEN; i++){
-        if ((__u32)i > srh_len)
+        if ((__u32)i >= srh_len)
             break;
         
         skb_srh[i] = cached_srh_bytes[i];

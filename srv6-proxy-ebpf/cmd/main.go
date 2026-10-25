@@ -199,6 +199,11 @@ func main() {
             encapSpec,
             ebpf.CollectionOptions{
                 MapReplacements: replacements,
+				Programs: ebpf.ProgramOptions{
+					LogLevel: ebpf.LogLevelInstruction |
+						ebpf.LogLevelBranch |
+						ebpf.LogLevelStats,
+				},
             },
         )
         if err != nil {
