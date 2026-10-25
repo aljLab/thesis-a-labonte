@@ -208,8 +208,11 @@ int decap(struct xdp_md *ctx)
     bpf_spin_lock(&cached->lock);
 
     cached->len = p.outer_len;
-    __builtin_memcpy(cached->bytes, p.ip6, p.outer_len);
-
+    __builtin_memcpy(cached->bytes, p.ip6, sizeof(struct ipv6hdr));
+    
+    void *cached_srh = (void *)(cached->bytes + sizeof(struct ipv6hdr));
+    __builtin_memcpy(cached_srh, p.srh, p.srh_len);
+    
     bpf_spin_unlock(&cached->lock);
 
     /*
