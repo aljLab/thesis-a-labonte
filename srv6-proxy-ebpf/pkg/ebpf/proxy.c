@@ -206,13 +206,18 @@ int decap(struct xdp_md *ctx)
         return XDP_DROP;
 
     bpf_spin_lock(&cached->lock);
-
     cached->len = p.outer_len;
     __builtin_memcpy(cached->bytes, p.ip6, sizeof(struct ipv6hdr));
     
-    void *cached_srh = (void *)(cached->bytes + sizeof(struct ipv6hdr));
-    __builtin_memcpy(cached_srh, p.srh, p.srh_len);
-    
+    const __u8 *srh_bytes = (__u8 *)p.srh; // points to new SRH in skb
+    // __builtin_memcpy(cached_srh, p.srh, p.srh_len); -> memcopy rejected by compiler -> copy byte by byte
+    #pragma unroll
+    for(int i = 0; i < MAX_CACHED_HDR; i++){
+        if((__u32)i >= p.srh_len)
+            break;
+        cached->bytes[sizeof(struct ipv6hdr) + i] = srh_bytes[i];
+    }
+
     bpf_spin_unlock(&cached->lock);
 
     /*
