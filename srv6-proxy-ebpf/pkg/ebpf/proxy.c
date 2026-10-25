@@ -209,8 +209,17 @@ int decap(struct xdp_md *ctx)
     cached->len = p.outer_len;
     __builtin_memcpy(cached->bytes, p.ip6, sizeof(struct ipv6hdr));
     
-    const __u8 *srh_bytes = (__u8 *)p.srh; // points to new SRH in skb
+    const __u8 *srh_bytes = (__u8 *)p.srh; // points to incoming SRH in skb
     // __builtin_memcpy(cached_srh, p.srh, p.srh_len); -> memcopy rejected by compiler -> copy byte by byte
+
+    void *end  = (void *)(long)ctx->data_end;
+    if((void *) srh_bytes + p.srh_len > end)
+        return XDP_DROP;
+    if((void *) srh_bytes + MAX_SRH_LEN > end)
+        return XDP_PASS;
+    if(p.srh_len > MAX_SRH_LEN)
+        return XDP_DROP;
+    
     #pragma unroll
     for(int i = 0; i < MAX_SRH_LEN; i++){
         if((__u32)i >= p.srh_len)
@@ -231,7 +240,7 @@ int decap(struct xdp_md *ctx)
         return XDP_DROP;
 
     data = (void *)(long)ctx->data; // stack +0
-    void *end = (void *)(long)ctx->data_end; // stack +4
+    end = (void *)(long)ctx->data_end; // stack +4
 
     struct ethhdr *eth = data;
     if ((void *)(eth + 1) > end)
@@ -347,6 +356,9 @@ int encap(struct xdp_md *ctx)
     const __u8 *cached_srh_bytes = (__u8 *) (cached->bytes + sizeof(struct ipv6hdr));
 
     __u32 srh_len = hdr_len - sizeof(struct ipv6hdr);
+
+    if((void *)(skb_srh + srh_len) > end)
+        return XDP_DROP;
 
     #pragma unroll
     for(int i = 0; i < MAX_SRH_LEN; i++){
