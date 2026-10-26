@@ -1,4 +1,4 @@
-#include <proxy.h>
+#include "proxy.h"
 
 /*
 MAPS
@@ -36,10 +36,10 @@ int decap(struct xdp_md *ctx)
     PARSE ETH + IPv6 + SRH + INNER VERSION and PROVE PACKET BOUNDS
     */
 
-    void *start = xdp_md->data;
-    void *end = xdp_md->data_end;
+    void *start = ctx->data;
+    void *end = ctx->data_end;
 
-    struct parsed_srh p = {};
+    struct parsed_srh *p = {};
 
     p->eth = start;
     if((void *)((char *)p->eth + sizeof(ethhdr)) > end) // try making pointer arithmetic explicit for verifier
@@ -51,7 +51,7 @@ int decap(struct xdp_md *ctx)
     
     p->srh = (void *)(p->ip6 + 1);
     // check for fixed len routing header first [ NextHeader | HdrExtLen | RoutingType | SegmentsLeft ]
-    if((char *)p->srh + 2 > end)
+    if((void *)((char *)p->srh + 2) > end)
         return XDP_DROP;
 
     __u8 hdr_ext_len = p->srh->hdrlen;
