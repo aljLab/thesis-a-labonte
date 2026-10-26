@@ -31,10 +31,10 @@ PROGRAMS
 SEC("xdp")
 int decap(struct xdp_md *ctx)
 {
+    bpf_printk("Entered decap program");
     /*
     PARSE ETH + IPv6 + SRH + INNER VERSION and PROVE PACKET BOUNDS
     */
-
     void *start = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
 
@@ -76,8 +76,7 @@ int decap(struct xdp_md *ctx)
         return XDP_DROP;
     
     // determine inner proto for ethernet header in encap, since it might change in the VNF
-
-    
+    bpf_printk("Decap: Parsed SRH --> SRH_LEN = %u, SRV6_LEN = %u", SRH_LEN, SRV6_LEN);
     /*
     UPDATE THE HEADER IN PACKET
     */
@@ -90,6 +89,8 @@ int decap(struct xdp_md *ctx)
         return XDP_DROP;
     
     __builtin_memcpy((void *)&p->ip6->daddr, (void *)&p->srh->segments[index], sizeof(p->ip6->daddr));
+
+    bpf_printk("Decap: Updated the SRH.");
 
     /* Alternatively: Copy byte by byte
     #pragma unroll
@@ -112,6 +113,9 @@ int decap(struct xdp_md *ctx)
     struct cached_outer *cached = bpf_map_lookup_elem(&srh_table, &slot);
     if (!cached) 
         return XDP_DROP;
+    
+    if((void *)cached->bytes + 2 <= end)
+        bpf_printk("Looked Up cached header successfully: %02x, %02x", cached->bytes[0], cached->bytes[1]);
 
     /*
     UPDATE CACHE: COPY IPv6 (outer) + SRH TO CACHE BUFFER
@@ -126,6 +130,7 @@ int decap(struct xdp_md *ctx)
     __builtin_memcpy((void *)cached->bytes, (void *)p->ip6, SRV6_LEN);
     bpf_spin_unlock(&cached->lock);
 
+    bpf_printk("Decap: updated cache: %02x, %02x", cached->bytes[0], cached->bytes[1]);
     /*
     COPY ETHERNET HEADER IN PACKET INFRONT OF INNER
     */
@@ -150,6 +155,7 @@ int decap(struct xdp_md *ctx)
     // lookup mac addresses
     __u32 src_key = slot;
     __u32 dst_key = N + slot;
+    bpf_printk("Retrieving mac's with keys: src (%u), dst (%u)", src_key, dst_key);
     struct mac_entry *src_mac = bpf_map_lookup_elem(&mac_addr_table, &src_key);
     struct mac_entry *dst_mac = bpf_map_lookup_elem(&mac_addr_table, &dst_key);
 
@@ -165,6 +171,7 @@ int decap(struct xdp_md *ctx)
         return XDP_DROP;
 
     __u8 version = *((__u8 *)eth + sizeof(struct ethhdr)) >> 4;
+    bpf_printk("DECAP: Inner version is %u", version);
     if(version == 6)
     {
         eth->h_proto = bpf_htons(ETH_P_IPV6);
