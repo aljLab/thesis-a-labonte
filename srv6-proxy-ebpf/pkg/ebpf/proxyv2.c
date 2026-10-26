@@ -103,11 +103,11 @@ int decap(struct xdp_md *ctx)
     struct parsed_srh *p = {};
 
     p->eth = start;
-    if((void *)((char *)p->eth + sizeof(ethhdr)) > end) // try making pointer arithmetic explicit for verifier
+    if((void *)((char *)p->eth + sizeof(struct ethhdr)) > end) // try making pointer arithmetic explicit for verifier
         return XDP_DROP;
 
     p->ip6 = (void *)(p->eth + 1);
-    if((void *)((char *)p->ip6 + sizeof(ipv6hdr)) > end)
+    if((void *)((char *)p->ip6 + sizeof(struct ipv6hdr)) > end)
         return XDP_DROP;
     
     p->srh = (void *)(p->ip6 + 1);
@@ -128,7 +128,7 @@ int decap(struct xdp_md *ctx)
     if((void *)((char *)p->srh + SRH_LEN) > end)
         return XDP_DROP;
     
-    p->outer_len = sizeof(ipv6hdr) + SRH_LEN;
+    p->outer_len = sizeof(struct ipv6hdr) + SRH_LEN;
     __u32 SRV6_LEN = p->outer_len;
     if((void *)((char *)p->ip6 + SRV6_LEN) > end)
         return XDP_DROP;
@@ -147,10 +147,10 @@ int decap(struct xdp_md *ctx)
     p->srh->segments_left--;
     __u8 index = p->srh->segments_left;
 
-    if(index >= (SRH_LEN - 8)/sizeof(in6_addr)) // esnure index is not bigger than the actual length of the segment list
+    if(index >= (SRH_LEN - 8)/sizeof(struct in6_addr)) // esnure index is not bigger than the actual length of the segment list
         return XDP_DROP;
     
-    __builtin_memcpy(p->ip6->daddr, p->srh->segments[index], sizeof(ipv6_addr));
+    __builtin_memcpy(p->ip6->daddr, p->srh->segments[index], sizeof(struct ipv6_addr));
 
     /* Alternatively: Copy byte by byte
     #pragma unroll
@@ -189,7 +189,7 @@ int decap(struct xdp_md *ctx)
     COPY ETHERNET HEADER IN PACKET INFRONT OF INNER
     */
 
-    __builtin_memcpy((void *)((char *)p->eth + SRV6_LEN), (void *)p->eth, sizeof(ethhdr));
+    __builtin_memcpy((void *)((char *)p->eth + SRV6_LEN), (void *)p->eth, sizeof(struct ethhdr));
 
     /*
     ADJUST BUFFER SIZE HEAD
@@ -203,7 +203,7 @@ int decap(struct xdp_md *ctx)
     UPDATE ETHERNET HEADER (src, dst, h_proto)
     */
     struct ethhdr *eth = start;
-    if((void *)((char *)eth + sizeof(ethhdr)) > end)
+    if((void *)((char *)eth + sizeof(struct ethhdr)) > end)
         return XDP_DROP;
 
     // lookup mac addresses
@@ -217,10 +217,10 @@ int decap(struct xdp_md *ctx)
     __builtin_memcpy((void *)eth->h_dest, (void *)dst_mac->addr, sizeof(eth->h_dest));
 
     // update next proto
-    if((void *)((char *)eth + sizeof(ethhdr) + 1) > end)
+    if((void *)((char *)eth + sizeof(struct ethhdr) + 1) > end)
         return XDP_DROP;
 
-    __u8 version = *((__u8 *)eth + sizeof(ethhdr)) >> 4;
+    __u8 version = *((__u8 *)eth + sizeof(struct ethhdr)) >> 4;
     if(version == 6)
     {
         eth->h_proto = bpf_htons(ETH_P_IPV6);
