@@ -38,7 +38,8 @@ int decap(struct xdp_md *ctx)
     void *start = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
 
-    struct parsed_srh *p = {};
+    struct parsed_srh parsed = {};
+    struct parsed_srh *p = &parsed;
 
     p->eth = start;
     if((void *)((char *)p->eth + sizeof(struct ethhdr)) > end) // try making pointer arithmetic explicit for verifier
@@ -102,13 +103,15 @@ int decap(struct xdp_md *ctx)
     SELECT THE SERVICE CHAIN SLOT
     */
     // just choose first slot for now
-    __u8 slot = SLOT;
+    __u32 slot = SLOT;
 
     /*
     READ CACHED ENTRY
     */
     // |-------ZERO-INITIALIZED-BY-GO-PROGRAM-------|
     struct cached_outer *cached = bpf_map_lookup_elem(&srh_table, &slot);
+    if (!cached) 
+        return XDP_DROP;
 
     /*
     UPDATE CACHE: COPY IPv6 (outer) + SRH TO CACHE BUFFER
@@ -149,6 +152,9 @@ int decap(struct xdp_md *ctx)
     __u32 dst_key = N + slot;
     struct mac_entry *src_mac = bpf_map_lookup_elem(&mac_addr_table, &src_key);
     struct mac_entry *dst_mac = bpf_map_lookup_elem(&mac_addr_table, &dst_key);
+
+    if (!src_mac || !dst_mac) 
+        return XDP_DROP;
 
     // replace mac addresses
     __builtin_memcpy((void *)eth->h_source, (void *)src_mac->addr, sizeof(eth->h_source));
