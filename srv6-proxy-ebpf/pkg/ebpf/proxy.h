@@ -1,10 +1,3 @@
-#include <linux/bpf.h>
-#include <linux/if_ether.h>
-#include <linux/ipv6.h>
-#include <linux/in.h>
-#include <bpf/bpf_helpers.h>
-#include <bpf/bpf_endian.h>
-
 #ifndef N
 #error "Compile with -DN=<number of service chains>"
 #endif

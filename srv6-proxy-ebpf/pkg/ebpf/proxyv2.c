@@ -1,3 +1,9 @@
+#include <linux/bpf.h>
+#include <linux/if_ether.h>
+#include <linux/ipv6.h>
+#include <linux/in.h>
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_endian.h>
 #include "proxy.h"
 
 /*
@@ -36,8 +42,8 @@ int decap(struct xdp_md *ctx)
     PARSE ETH + IPv6 + SRH + INNER VERSION and PROVE PACKET BOUNDS
     */
 
-    void *start = ctx->data;
-    void *end = ctx->data_end;
+    void *start = (void *)(long)ctx->data;
+    void *end = (void *)(long)ctx->data_end;
 
     struct parsed_srh *p = {};
 
@@ -119,10 +125,10 @@ int decap(struct xdp_md *ctx)
     /* if((void *)((char *)p->ip6 + SRV6_LEN) > end)
         return XDP_DROP; checked earlier */
 
-    bpf_spin_lock(cached->lock);
+    bpf_spin_lock(&cached->lock);
     cached->len = SRV6_LEN;
     __builtin_memcpy((void *)cached->bytes, (void *)p->ip6, SRV6_LEN);
-    bpf_spin_unlock(cached->lock);
+    bpf_spin_unlock(&cached->lock);
 
     /*
     COPY ETHERNET HEADER IN PACKET INFRONT OF INNER
@@ -136,8 +142,8 @@ int decap(struct xdp_md *ctx)
     if(bpf_adjust_head(ctx, SRV6_LEN) < 0)
         return XDP_DROP;
     
-    void *start = xdp_md->data;
-    void *end = xdp_md->data_end;
+    start = (void *)(long)ctx->data;
+    end = (void *)(long)ctx->data_end;
     /*
     UPDATE ETHERNET HEADER (src, dst, h_proto)
     */
@@ -159,14 +165,14 @@ int decap(struct xdp_md *ctx)
     if((void *)((char *)eth + sizeof(ethhdr) + 1) > end)
         return XDP_DROP;
 
-    __u8 version = *(eth + 1) >> 4;
+    __u8 version = *((__u8 *)eth + sizeof(ethhdr)) >> 4;
     if(version == 6)
     {
-        eth->h_proto = ETH_P_IPV6;
+        eth->h_proto = bpf_htons(ETH_P_IPV6);
     }
     else if (version == 4)
     {
-        eth->h_proto = ETH_P_IP;
+        eth->h_proto = bpf_htons(ETH_P_IP);
     } else 
     {
         return XDP_PASS; // or drop?
