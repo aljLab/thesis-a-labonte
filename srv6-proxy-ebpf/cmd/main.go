@@ -110,6 +110,7 @@ func main() {
 	if errors.As(err, &ve) {
 		fmt.Printf("Verifier log (%d lines):\n", len(ve.Log))
 		fmt.Println(strings.Join(ve.Log, "\n"))
+		base.Close()
 		os.Exit(-1);
 	} else {
 		log.Printf("Load error: %+v", err)
