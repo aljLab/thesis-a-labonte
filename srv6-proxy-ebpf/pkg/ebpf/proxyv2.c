@@ -250,3 +250,5 @@ int encap(struct xdp_md *ctx)
 {
     return 0;
 }
+
+char LICENSE[] SEC("license") = "GPL";
