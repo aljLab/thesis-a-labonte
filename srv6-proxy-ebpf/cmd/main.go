@@ -4,6 +4,7 @@ package main
 import (
     "context"
 	"errors"
+	"flag"
     "fmt"
     "log"
     "net"
@@ -31,6 +32,16 @@ type config struct {
 
 func main() {
 	// TODO: fetch gateway mac
+	version := flag.Int("version", 1, "Determines which version of the proxy file to use.")
+
+	flag.Parse()
+	filePath := "pkg/ebpf/proxy.c"
+
+	fmt.Println("Version: ", *version)
+	if *version == 2 {
+		filePath = "pkg/ebpf/proxyv2.c"
+		fmt.Println("running versino 2 with filepath: ", filePath)
+	}
 
     cfg := config{
         iml0: "iml0",
@@ -78,7 +89,7 @@ func main() {
     defer os.RemoveAll(tmp)
 
     baseObj := filepath.Join(tmp, "base.o")
-    compileBPF(ctx, "pkg/ebpf/proxy.c", baseObj, n, 0)
+    compileBPF(ctx, filePath, baseObj, n, 0)
 
     spec, err := ebpf.LoadCollectionSpec(baseObj)
     if err != nil {
@@ -203,7 +214,7 @@ func main() {
         obj := filepath.Join(tmp, fmt.Sprintf("encap-%d.o", i))
 
         // compile program again, passing in the index of each fromVNF interface (nf(i/2)) for correct SRH lookup
-		compileBPF(ctx, "pkg/ebpf/proxy.c", obj, n, i)
+		compileBPF(ctx, filePath, obj, n, i)
 
         encapSpec, err := ebpf.LoadCollectionSpec(obj)
         if err != nil {
