@@ -150,7 +150,7 @@ int decap(struct xdp_md *ctx)
     if(index >= (SRH_LEN - 8)/sizeof(struct in6_addr)) // esnure index is not bigger than the actual length of the segment list
         return XDP_DROP;
     
-    __builtin_memcpy(p->ip6->daddr, p->srh->segments[index], sizeof(struct ipv6_addr));
+    __builtin_memcpy((void *)p->ip6->daddr, (void *) p->srh->segments[index], sizeof(p->ip6->daddr));
 
     /* Alternatively: Copy byte by byte
     #pragma unroll
