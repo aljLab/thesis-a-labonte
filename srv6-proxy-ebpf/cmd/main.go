@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	cachedValueSize = 2096 // lock + len + pad + IPv6 header + max SRH
+	cachedValueSize = 2104 // lock + len + pad + IPv6 header + max SRH + routingHdr
 )
 
 type config struct {
