@@ -113,7 +113,7 @@ func main() {
 		base.Close()
 		os.Exit(-1);
 	} else {
-		log.Printf("Load error: %+v", err)
+		log.Printf("No verifier error.")
 		defer base.Close()
 	}
 
@@ -210,68 +210,69 @@ func main() {
             c.Close()
         }
     }()
-
-    for i, iface := range fromVNF {
-        obj := filepath.Join(tmp, fmt.Sprintf("encap-%d.o", i))
-
-        // compile program again, passing in the index of each fromVNF interface (nf(i/2)) for correct SRH lookup
-		compileBPF(ctx, filePath, obj, n, i)
-
-        encapSpec, err := ebpf.LoadCollectionSpec(obj)
-        if err != nil {
-            log.Fatalf("load encap spec %d: %v", i, err)
-        }
-
-		// instantiate collection with newly compiled program referencing map objects created earlier
-        coll, err := ebpf.NewCollectionWithOptions(
-            encapSpec,
-            ebpf.CollectionOptions{
-                MapReplacements: replacements,
-				Programs: ebpf.ProgramOptions{
-					LogLevel: ebpf.LogLevelInstruction |
-						ebpf.LogLevelBranch |
-						ebpf.LogLevelStats,
+	if(*version == 1){
+		for i, iface := range fromVNF {
+			obj := filepath.Join(tmp, fmt.Sprintf("encap-%d.o", i))
+	
+			// compile program again, passing in the index of each fromVNF interface (nf(i/2)) for correct SRH lookup
+			compileBPF(ctx, filePath, obj, n, i)
+	
+			encapSpec, err := ebpf.LoadCollectionSpec(obj)
+			if err != nil {
+				log.Fatalf("load encap spec %d: %v", i, err)
+			}
+	
+			// instantiate collection with newly compiled program referencing map objects created earlier
+			coll, err := ebpf.NewCollectionWithOptions(
+				encapSpec,
+				ebpf.CollectionOptions{
+					MapReplacements: replacements,
+					Programs: ebpf.ProgramOptions{
+						LogLevel: ebpf.LogLevelInstruction |
+							ebpf.LogLevelBranch |
+							ebpf.LogLevelStats,
+					},
 				},
-            },
-        )
-        if err != nil {
-            log.Fatalf("load encap collection %d: %v", i, err)
-        }
-		// store for later cleanup
-        encapCollections = append(encapCollections, coll)
-
-        prog := coll.Programs["encap"]
-        if prog == nil {
-            log.Fatalf("encap program missing for slot %d", i)
-        }
-
-        l, err := link.AttachXDP(link.XDPOptions{
-            Program:   prog,
-            Interface: iface.Index,
-        })
-        if err != nil {
-            log.Fatalf("attach encap to %s: %v", iface.Name, err)
-        }
-		var ve *ebpf.VerifierError
-		if errors.As(err, &ve) {
-			fmt.Printf("Verifier log (%d lines):\n", len(ve.Log))
-			fmt.Println(strings.Join(ve.Log, "\n"))
-		} else {
-			log.Printf("Load error: %+v", err)
+			)
+			if err != nil {
+				log.Fatalf("load encap collection %d: %v", i, err)
+			}
+			// store for later cleanup
+			encapCollections = append(encapCollections, coll)
+	
+			prog := coll.Programs["encap"]
+			if prog == nil {
+				log.Fatalf("encap program missing for slot %d", i)
+			}
+	
+			l, err := link.AttachXDP(link.XDPOptions{
+				Program:   prog,
+				Interface: iface.Index,
+			})
+			if err != nil {
+				log.Fatalf("attach encap to %s: %v", iface.Name, err)
+			}
+			var ve *ebpf.VerifierError
+			if errors.As(err, &ve) {
+				fmt.Printf("Verifier log (%d lines):\n", len(ve.Log))
+				fmt.Println(strings.Join(ve.Log, "\n"))
+			} else {
+				log.Printf("No load err")
+			}
+	
+			links = append(links, l)
+	
+			fmt.Printf(
+				"encap slot %d attached to %s (ifindex %d)\n",
+				i, iface.Name, iface.Index,
+			)
 		}
-
-        links = append(links, l)
-
-        fmt.Printf(
-            "encap slot %d attached to %s (ifindex %d)\n",
-            i, iface.Name, iface.Index,
-        )
-    }
-
-    fmt.Printf(
-        "decap attached to %s; shared maps initialized for %d slots\n",
-        ifaceIML.Name, n,
-    )
+	
+		fmt.Printf(
+			"decap attached to %s; shared maps initialized for %d slots\n",
+			ifaceIML.Name, n,
+		)
+	}
 
     // TODO: consider pinning here (storing the file descriptor to keep the objects from being gc'ed)
     select {}
