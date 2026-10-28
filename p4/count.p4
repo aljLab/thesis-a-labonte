@@ -30,19 +30,19 @@ control forward_control(
 
         direct_counter = fwd_counter;
         
+        default_action = forward_to(2);
+
         const entries = {
             (32w1) : forward_to(2);
             (32w2) : forward_to(1);
         }
 
-        default_action = forward_to(2);
     }
 
     table drop_table {
         key = { headers.ipv6.dst_addr: exact; }
 
         actions = {
-            forward_to;
             drop;
         }
 
