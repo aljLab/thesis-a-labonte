@@ -118,7 +118,7 @@ func (dpl *DplServer) runNspectCommand(ctx context.Context, command string) ([]b
 	cmd := exec.CommandContext(ctx, 
 		"dpl", "nspect",
 		"-a", dpl.NspectAddr,
-		"--json", command,
+		command, "--json", 
 	)
 
 	dpl.Log.Info("Running perf command: dpl nspect -a <IP>:<Port> --json ", command)
