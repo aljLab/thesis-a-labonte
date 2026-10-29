@@ -102,14 +102,14 @@ func (dpl *DplServer) DevicesHandler(res http.ResponseWriter, _ *http.Request){
 			Message: "Failed to run Nspec devices command.",
 			Details: fmt.Sprintf("Error: %s", err),
 		}); err != nil {
-			log.Printf("failed to encode error response: %v", err)
+			fmt.Printf("failed to encode error response: %v", err)
 		}
 		return 
 	}
 
 	res.WriteHeader(http.StatusOK)
 	_, err = res.Write(data); if err != nil {
-		dpl.Log.Info("Failed to write response data", "Data", data)
+		fmt.Printf("Failed to write response data %s", data)
 	}
 }
 
@@ -122,9 +122,10 @@ func (dpl *DplServer) runNspectCommand(ctx context.Context, command string) ([]b
 	)
 
 	dpl.Log.Info("Running perf command: dpl nspect -a <IP>:<Port> --json ", command)
+	fmt.Printf("Running nspect command: %s", cmd.String())
 
 	out, err := cmd.CombinedOutput(); if err != nil {
-		dpl.Log.Info("Error running perf command %w. Out: %s", err, string(out))
+		fmt.Printf("Error running perf command %s. Out: %s", err, string(out))
 		return out, fmt.Errorf("Nspec command %s produced error %w", command, err)
 	}
 
