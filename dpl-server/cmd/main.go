@@ -121,11 +121,11 @@ func (dpl *DplServer) runNspectCommand(ctx context.Context, command string) ([]b
 		command, "--json", 
 	)
 
-	dpl.Log.Info("Running perf command: dpl nspect -a <IP>:<Port> --json ", command)
+	dpl.Log.Info("Running nspect command: dpl nspect -a <IP>:<Port> --json ", command)
 	fmt.Printf("Running nspect command: %s", cmd.String())
 
 	out, err := cmd.CombinedOutput(); if err != nil {
-		fmt.Printf("Error running perf command %s. Out: %s", err, string(out))
+		fmt.Printf("Error running nspect command %s. Out: %s", err, string(out))
 		return out, fmt.Errorf("Nspec command %s produced error %w", command, err)
 	}
 
