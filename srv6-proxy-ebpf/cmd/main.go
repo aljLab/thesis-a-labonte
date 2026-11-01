@@ -115,7 +115,7 @@ func main() {
     for _, iface := range macIndexMap {
         // inIfaces..., OutIfaces..., DispatchVeth, RoutingBridge
         // put LinkIndex in correct spot in LinIndex
-        if err := macMap.Put(uint32(i), uint32(iface.LinkIndex)); err != nil {
+        if err := linkMap.Put(uint32(i), uint32(iface.LinkIndex)); err != nil {
             log.Fatal("populate lane LinkIndex: ", err)
         }
         // put mac addr in correct place in macMap
