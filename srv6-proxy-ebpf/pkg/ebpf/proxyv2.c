@@ -25,15 +25,15 @@ struct {
 
 // per cpu map to store the sfc's momentarily occupying the lanes: { lane_index -> sfc }
 struct {
-    __uint(type, BPF_MAP_PERCPU_TYPE_ARRAY);
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, N);
     __type(key, __u32);
-    __type(value, struct sfc);
+    __type(value, struct sfc_t);
 } sfc_lane_map SEC(".maps");
 
 // one-entry clock map storing a monotonic clock value increasing on each SRv6 packet
 struct {
-    __uint(type, BPF_MAP_PERCPU_TYPE_ARRAY);
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 1);
     __type(key, __u32);
     __type(value, __u64);
@@ -47,8 +47,8 @@ FUNCTIONS
 __u32 assign_lane(struct in6addr *new_segs, __u64 *clock)
 {
     __u32 oldest_lane; // stores the lane to be evicted if new_segs is a new SFC
-    __u64 oldest_time = 2^63; // initialize to max of allowed distance between two packets
-    struct sfc *oldest_sfc;
+    __u64 oldest_time = 1ULL << 63; // initialize to max of allowed distance between two packets
+    struct sfc_t *oldest_sfc;
 
     // proof length of new_segs
     __u32 NEW_SEG_LEN = sizeof(new_segs);
@@ -57,14 +57,14 @@ __u32 assign_lane(struct in6addr *new_segs, __u64 *clock)
 
     for(int i = 0; i < N; i++){
         // no locking needed, map is per cpu and per target dispatcher
-        sfc = bpf_map_lookup_elem(&sfc_lane_map, &i); // initialized with 
+        struct sfc_t *sfc = bpf_map_lookup_elem(&sfc_lane_map, &i); // initialized with 
 
         if (!sfc)
             return -1;
         
         if(sfc->last_seen == 0){ // means lane was not assigned yet and is free
             sfc->last_seen = clock;
-            if(bpf_map_udpated_elem(&sfc_lane_map, (__u32 *)&i, &sfc, ) < 0)
+            if(bpf_map_update_elem(&sfc_lane_map, (__u32 *)&i, sfc, BPF_ANY) < 0)
                 return -1;
             return i;
         }
@@ -75,20 +75,20 @@ __u32 assign_lane(struct in6addr *new_segs, __u64 *clock)
             continue;
 
         // update eviction candidate (account for clock wrap)
-         if((int64_t)(sfc->last_seen - oldest_time) < 0)
+         if((__s64)(sfc->last_seen - oldest_time) < 0)
             oldest_time = sfc->last_seen;
             oldest_lane = i;
             oldest_sfc = sfc; // kep reference eviction candidate
         
-        bool eq = true;
+        int eq = 0;
         for(int j = 0; j < SEG_LEN; j++){
             if(new_segs[i] != sfc->segments[i])
-                eq = false;
+                eq = -1;
                 break;
         }
 
         // segment list is the same -> put incoming packet on the same lane and updated sfc age
-        if(eq)
+        if(eq == 0)
             sfc->last_seen = *clock;
             return i;
     }

@@ -40,10 +40,10 @@ struct mac_entry {
     __u8 pad[2];
 };
 
-struct sfc {
+struct sfc_t {
     __u64 last_seen; // monotonic clock value of last encounter of traffic from this service chain
-    struct in6addr *segments;
-}
+    struct in6_addr *segments;
+};
 
 struct ipv6_sr_hdr {
 	__u8	nexthdr;
