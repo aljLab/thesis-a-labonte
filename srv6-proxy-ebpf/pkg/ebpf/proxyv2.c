@@ -80,17 +80,10 @@ __u32 assign_lane(struct in6_addr *new_segs, __u64 *clock)
             oldest_lane = i;
             oldest_sfc = sfc; // kep reference eviction candidate
         
-        int eq = 0;
-        for(int j = 0; j < SEG_LEN; j++){
-            if(new_segs[j] != sfc->segments[j])
-                eq = -1;
-                break;
-        }
-
-        // segment list is the same -> put incoming packet on the same lane and updated sfc age
-        if(eq == 0)
+        if (__builtin_memcmp(&new_segs, &sfc->segments, SEG_LEN) != 0) {
             sfc->last_seen = *clock;
             return i;
+        }
     }
 
     // if no stored srh matches and no lane is free -> new sfc -> evict oldest lane
