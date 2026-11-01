@@ -18,7 +18,7 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 2 * N + 1);
+    __uint(max_entries, 2 * N + 2);
     __type(key, __u32);
     __type(value, __u32);
 } link_index_table SEC(".maps");
