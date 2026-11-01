@@ -89,8 +89,8 @@ func main() {
     macMap := base.Maps["mac_addr_table"]
 
     // per CPU / per target maps
-    clockMap := base.Maps["clock_table"]
-    sfcLaneMap := base.Maps["sfc_lane_table"]
+    clockMap := base.Maps["clock_map"]
+    sfcLaneMap := base.Maps["sfc_lane_map"]
 
     if srhMap == nil || linkMap == nil || macMap == nil {
         log.Fatal("expected shared BPF maps are missing")
