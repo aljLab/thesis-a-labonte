@@ -106,9 +106,10 @@ int decap(struct xdp_md *ctx)
     __u32 clock_index = 0;
     __u64 *clock = bpf_map_lookup_elem(&clock_map, &clock_index);
 
-    if(!clock)
+    if(!clock){
         bpf_printk("Could not get clock in decap.");
         return XDP_DROP;
+    }
     /*
     PARSE ETH + IPv6 + SRH + INNER VERSION and PROVE PACKET BOUNDS
     */
