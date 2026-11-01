@@ -36,9 +36,10 @@ func main() {
     }
 
     macIndexMap, err := setup.Setup(&conf); if err != nil {
-        fmt.Printf("Could not setup networking: %s", err)
+        log.Fatalf("Could not setup networking: %s", err)
     }
 
+    fmt.Printf("Set Up Networking")
 
     n := len(conf.InIfaces)
     ctx := context.Background()
@@ -49,6 +50,7 @@ func main() {
     }
     defer os.RemoveAll(tmp)
 
+    fmt.Printf("Compiling programs")
     // compile the ebpf programs
     baseObj := filepath.Join(tmp, "base.o")
     compileBPF(ctx, filePath, baseObj, n, 0)
@@ -70,6 +72,8 @@ func main() {
 				},
             },
 	)
+
+    defer base.Close()
     
     // check verifier errors
     var ve *ebpf.VerifierError
@@ -78,10 +82,8 @@ func main() {
 		fmt.Println(strings.Join(ve.Log, "\n"))
 		base.Close()
 		os.Exit(-1);
-	} else {
-		log.Printf("No verifier error.")
-		defer base.Close()
 	}
+
     // shared maps
     srhMap := base.Maps["srh_table"]
     linkMap := base.Maps["link_index_table"]
@@ -98,6 +100,8 @@ func main() {
     if clockMap == nil || sfcLaneMap == nil {
         log.Fatal("expected per CPU BPF maps are missing")
     }
+
+    fmt.Println("Fetched all maps")
 
     // All maps are populated before attaching any program.
     zeroValue := make([]byte, cachedValueSize)
@@ -135,6 +139,7 @@ func main() {
         }
     }
 
+    fmt.Println("Initialized all map values")
 
 	/*
     * Attach decap to dispatcher
@@ -160,6 +165,8 @@ func main() {
         log.Fatal("attach decap: ", err)
     }
     links = append(links, decapLink)
+
+    fmt.Println("Succesfully attached prog to dispatch interface")
 
 /*     replacements := map[string]*ebpf.Map{
         "srh_table":       srhMap,
