@@ -103,8 +103,8 @@ SEC("xdp")
 int decap(struct xdp_md *ctx)
 {   
     bpf_printk("Entered decap program");
-
-    __u64 *clock = bpf_map_lookup_elem(&clock_map, (__u32 *)1); // TODO: 0-initialize in setup
+    __u32 index = 0
+    __u64 *clock = bpf_map_lookup_elem(&clock_map, &index);
 
     if(!clock)
         bpf_printk("Could not get clock in decap.");

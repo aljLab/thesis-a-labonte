@@ -72,17 +72,16 @@ func main() {
 				},
             },
 	)
-
-    defer base.Close()
     
     // check verifier errors
     var ve *ebpf.VerifierError
 	if errors.As(err, &ve) {
 		fmt.Printf("Verifier log (%d lines):\n", len(ve.Log))
 		fmt.Println(strings.Join(ve.Log, "\n"))
-		base.Close()
-		os.Exit(-1);
+		os.Exit(-1)
 	}
+
+    defer base.Close()
 
     // shared maps
     srhMap := base.Maps["srh_table"]
