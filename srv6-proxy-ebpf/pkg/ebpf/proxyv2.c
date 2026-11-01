@@ -221,10 +221,12 @@ int decap(struct xdp_md *ctx)
     /*
     UPDATE CACHE: COPY IPv6 (outer) + SRH TO CACHE BUFFER
     */
+    if(SRV6_LEN > MAX_CACHED_HDR)
+        return XDP_DROP;
     if(sizeof(cached->bytes) < SRV6_LEN)
         return XDP_DROP;
-    /* if((void *)((char *)p->ip6 + SRV6_LEN) > end)
-        return XDP_DROP; checked earlier */
+    if((void *)((char *)p->ip6 + SRV6_LEN) > end)
+        return XDP_DROP;
 
     bpf_spin_lock(&cached->lock);
     cached->len = SRV6_LEN;
