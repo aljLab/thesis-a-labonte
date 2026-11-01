@@ -142,7 +142,7 @@ int decap(struct xdp_md *ctx)
     __u8 hdr_ext_len = p->srh->hdrlen;
     // sanity check hdr_ext_len and prove parsing hdr_ext_len bytes after p->srh + 8 is not going across packet boundaries
     if(hdr_ext_len > (__u8)MAX_SEGLIST_LEN/8){
-        bpf_printk("hdr len does not check out -> dropping");    
+        bpf_printk("hdr len %u does not check out -> dropping", hdr_ext_len);    
         return XDP_DROP;
     }
 
