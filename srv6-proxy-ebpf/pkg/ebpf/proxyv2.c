@@ -173,7 +173,7 @@ int decap(struct xdp_md *ctx)
     UPDATE THE HEADER IN PACKET
     */
    // proof that segmentsLeft is in packet range
-    if((void *)(p->srh->nexthdr + 5) > end)
+    if((void *)(p->srh->segments) > end)
         return XDP_DROP;
     if(p->srh->segments_left < 1)
         return XDP_PASS; // pass on, seems to be last segment which we can't handle
