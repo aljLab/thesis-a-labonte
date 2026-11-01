@@ -55,7 +55,7 @@ __u32 assign_lane(struct in6_addr *new_segs, __u64 *clock)
     if(NEW_SEG_LEN < 1 || NEW_SEG_LEN > 128)
         return -1;
 
-    for(int i = 0; i < N; i++){
+    for(__u32 i = 0; i < N; i++){
         // no locking needed, map is per cpu and per target dispatcher
         struct sfc_t *sfc = bpf_map_lookup_elem(&sfc_lane_map, &i); // initialized with 
 
@@ -64,7 +64,7 @@ __u32 assign_lane(struct in6_addr *new_segs, __u64 *clock)
         
         if(sfc->last_seen == 0){ // means lane was not assigned yet and is free
             sfc->last_seen = *clock;
-            if(bpf_map_update_elem(&sfc_lane_map, (__u32 *)&i, sfc, BPF_ANY) < 0)
+            if(bpf_map_update_elem(&sfc_lane_map, &i, sfc, BPF_ANY) < 0)
                 return -1;
             return i;
         }
@@ -96,7 +96,7 @@ __u32 assign_lane(struct in6_addr *new_segs, __u64 *clock)
     // if no stored srh matches and no lane is free -> new sfc -> evict oldest lane
     oldest_sfc->segments = new_segs;
     oldest_sfc->last_seen = *clock;
-    if (bpf_map_update_elem(&sfc_lane_map, (__u32 *)oldest_lane, (void *)oldest_sfc, BPF_ANY) < 0)
+    if (bpf_map_update_elem(&sfc_lane_map, &oldest_lane, (void *)oldest_sfc, BPF_ANY) < 0)
         return -1;
 
     return oldest_lane;
@@ -114,7 +114,7 @@ int decap(struct xdp_md *ctx)
     __u64 *clock = bpf_map_lookup_elem(&clock_map, (__u32 *)1); // TODO: 0-initialize in setup
 
     if(!clock)
-        bpf_printk("Could not get clock in decap.")
+        bpf_printk("Could not get clock in decap.");
         return XDP_DROP;
     /*
     PARSE ETH + IPv6 + SRH + INNER VERSION and PROVE PACKET BOUNDS
