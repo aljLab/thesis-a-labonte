@@ -1,5 +1,4 @@
-// go:build linux
-package main
+package setup
 
 import (
 	"fmt"
@@ -34,7 +33,7 @@ PACKET WALK: p1 arrives encapsulated at routing bridge (router-vrf)
 -> IN OutIfaceN -> XDP encap program -> reencapsulate -> lookup mac of routing bridge -> update eth -> redirect_to(bridgeport)
 */
 
-func setup(conf *Config) (map[string]MacIndexMapping, error) {
+func Setup(conf *Config) (map[string]MacIndexMapping, error) {
 	if len(conf.InIfaces) != len(conf.OutIfaces) {
 		return nil, fmt.Errorf("InIfaces (%d) and OutIfaces (%d) must have the same length",
 			len(conf.InIfaces), len(conf.OutIfaces))

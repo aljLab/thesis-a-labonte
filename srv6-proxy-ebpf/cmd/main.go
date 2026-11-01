@@ -14,6 +14,8 @@ import (
     "strconv"
 	"strings"
 
+    "github.com/aljLab/srv6-proxy-ebpf/setup"
+
     "github.com/cilium/ebpf"
     "github.com/cilium/ebpf/link"
 )
@@ -25,7 +27,7 @@ const (
 func main() {
 	filePath := "pkg/ebpf/proxyv2.c"
 
-	conf := Config{
+	conf := setup.Config{
         InIfaces: []string{"bf-00", "bf-10"},
         OutIfaces: []string{"bf-01", "bf-11"},
         BridgePortVeth: "routing-br-port",
@@ -33,7 +35,7 @@ func main() {
         RoutingBridgeName: "routing-bridge",
     }
 
-    macIndexMap, err := setup(&conf); if err != nil {
+    macIndexMap, err := setup.Setup(&conf); if err != nil {
         fmt.Printf("Could not setup networking: %s", err)
     }
 
