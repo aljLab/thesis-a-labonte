@@ -118,39 +118,53 @@ int decap(struct xdp_md *ctx)
     struct parsed_srh parsed = {};
     struct parsed_srh *p = &parsed;
 
+    bpf_printk("starting to parse headers...");
+
     p->eth = start;
-    if((void *)((char *)p->eth + sizeof(struct ethhdr)) > end) // try making pointer arithmetic explicit for verifier
+    if((void *)((char *)p->eth + sizeof(struct ethhdr)) > end){ // try making pointer arithmetic explicit for verifier
+        bpf_printk("Failed ETH size check -> dropping");
         return XDP_DROP;
+    }
 
     p->ip6 = (void *)(p->eth + 1);
-    if((void *)((char *)p->ip6 + sizeof(struct ipv6hdr)) > end)
+    if((void *)((char *)p->ip6 + sizeof(struct ipv6hdr)) > end){
+        bpf_printk("Failed IP6 size check -> dropping");    
         return XDP_DROP;
-    
+    }
     p->srh = (void *)(p->ip6 + 1);
     // check for fixed len routing header first [ NextHeader | HdrExtLen | RoutingType | SegmentsLeft ]
-    if((void *)((char *)p->srh + 2) > end)
+    if((void *)((char *)p->srh + 2) > end){
+        bpf_printk("Failed fixed len srh size check -> dropping");    
         return XDP_DROP;
+    }
 
     __u8 hdr_ext_len = p->srh->hdrlen;
     // sanity check hdr_ext_len and prove parsing hdr_ext_len bytes after p->srh + 8 is not going across packet boundaries
-    if(hdr_ext_len > (__u8)MAX_SEGLIST_LEN/8)
+    if(hdr_ext_len > (__u8)MAX_SEGLIST_LEN/8){
+        bpf_printk("hdr len does not check out -> dropping");    
         return XDP_DROP;
+    }
 
     p->srh_len = RH_SIZE + hdr_ext_len * 8;
     __u32 SRH_LEN = p-> srh_len;
-    if(SRH_LEN > MAX_SRH_LEN)
+    if(SRH_LEN > MAX_SRH_LEN){
+        bpf_printk("SRH_LEN > MAX_SRH_LEN -> dropping");    
         return XDP_DROP;
-    
+    }
     if((void *)((char *)p->srh + SRH_LEN) > end)
         return XDP_DROP;
     
     p->outer_len = sizeof(struct ipv6hdr) + SRH_LEN;
     __u32 SRV6_LEN = p->outer_len;
-    if((void *)((char *)p->ip6 + SRV6_LEN) > end)
+    if((void *)((char *)p->ip6 + SRV6_LEN) > end){
+        bpf_printk("ipv6 header + SRV6 header exceeds packet boundaries -> dropping");
         return XDP_DROP;
+    }
 
-    if((void *)((char *)p->srh->segments + (SRH_LEN - 8)) > end)
+    if((void *)((char *)p->srh->segments + (SRH_LEN - 8)) > end){
+        bpf_printk("segment list is too long");
         return XDP_DROP;
+    }
     
     // determine inner proto for ethernet header in encap, since it might change in the VNF
     bpf_printk("Decap: Parsed SRH --> SRH_LEN = %u, SRV6_LEN = %u", SRH_LEN, SRV6_LEN);
