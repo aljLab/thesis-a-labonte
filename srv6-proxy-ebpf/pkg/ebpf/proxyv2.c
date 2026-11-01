@@ -46,7 +46,7 @@ FUNCTIONS
 
 __u32 assign_lane(struct in6_addr *new_segs, __u64 *clock)
 {
-    __u32 oldest_lane; // stores the lane to be evicted if new_segs is a new SFC
+    __s32 oldest_lane; // stores the lane to be evicted if new_segs is a new SFC
     __u64 oldest_time = 1ULL << 63; // initialize to max of allowed distance between two packets
     struct sfc_t *oldest_sfc;
 
@@ -55,17 +55,16 @@ __u32 assign_lane(struct in6_addr *new_segs, __u64 *clock)
     if(NEW_SEG_LEN < 1 || NEW_SEG_LEN > 128)
         return -1;
 
-    for(__u32 i = 0; i < N; i++){
-        // no locking needed, map is per cpu and per target dispatcher
+    for(__s32 i = 0; i < N; i++){
         struct sfc_t *sfc = bpf_map_lookup_elem(&sfc_lane_map, &i); // initialized with 
 
         if (!sfc)
             return -1;
         
         if(sfc->last_seen == 0){ // means lane was not assigned yet and is free
+            __builtin_memcpy((void *)sfc->segments, (void *)new_segs, NEW_SEG_LEN);
             sfc->last_seen = *clock;
-            if(bpf_map_update_elem(&sfc_lane_map, &i, sfc, BPF_ANY) < 0)
-                return -1;
+            
             return i;
         }
         
@@ -75,22 +74,20 @@ __u32 assign_lane(struct in6_addr *new_segs, __u64 *clock)
             continue;
 
         // update eviction candidate (account for clock wrap)
-         if((__s64)(sfc->last_seen - oldest_time) < 0)
+         if((__s64)(sfc->last_seen - oldest_time) < 0){
             oldest_time = sfc->last_seen;
             oldest_lane = i;
             oldest_sfc = sfc; // kep reference eviction candidate
-        
-        if (__builtin_memcmp(&new_segs, &sfc->segments, SEG_LEN) != 0) {
+        }
+        if (__builtin_memcmp(new_segs, sfc->segments, SEG_LEN) == 0) {
             sfc->last_seen = *clock;
             return i;
         }
     }
 
     // if no stored srh matches and no lane is free -> new sfc -> evict oldest lane
-    oldest_sfc->segments = new_segs;
+    __builtin_memcpy((void *)oldest_sfc->segments, (void *)new_segs, NEW_SEG_LEN);
     oldest_sfc->last_seen = *clock;
-    if (bpf_map_update_elem(&sfc_lane_map, &oldest_lane, (void *)oldest_sfc, BPF_ANY) < 0)
-        return -1;
 
     return oldest_lane;
 }
@@ -134,7 +131,7 @@ int decap(struct xdp_md *ctx)
     }
     p->srh = (void *)(p->ip6 + 1);
     // check for fixed len routing header first [ NextHeader | HdrExtLen | RoutingType | SegmentsLeft ]
-    if((void *)((char *)p->srh + 2) > end){
+    if((void *)((char *)p->srh + 8) > end){
         bpf_printk("Failed fixed len srh size check -> dropping");    
         return XDP_DROP;
     }
@@ -200,16 +197,16 @@ int decap(struct xdp_md *ctx)
     */
     // just choose first slot for now
     //__u32 slot = SLOT;
-    clock++; // ensure clock is always bigger than 0
-    __u32 lane = assign_lane(p->srh->segments, clock);
-    if(lane < 0)
+    (*clock)++; // ensure clock is always bigger than 0
+    __s32 lane = assign_lane(p->srh->segments, clock);
+    if(lane < 0){
         bpf_printk("Lane assignemnt is negative.");
         return XDP_DROP;
-
-    if(lane >= N)
+    }
+    if(lane >= N){
         bpf_printk("assigned lane is bigger than #lanes");
         return XDP_DROP;
-
+    }
     /*
     READ CACHED ENTRY
     */
