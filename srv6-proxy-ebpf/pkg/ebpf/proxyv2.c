@@ -44,7 +44,7 @@ struct {
 FUNCTIONS
 */
 
-__u32 assign_lane(struct in6addr *new_segs, __u64 *clock)
+__u32 assign_lane(struct in6_addr *new_segs, __u64 *clock)
 {
     __u32 oldest_lane; // stores the lane to be evicted if new_segs is a new SFC
     __u64 oldest_time = 1ULL << 63; // initialize to max of allowed distance between two packets
@@ -63,7 +63,7 @@ __u32 assign_lane(struct in6addr *new_segs, __u64 *clock)
             return -1;
         
         if(sfc->last_seen == 0){ // means lane was not assigned yet and is free
-            sfc->last_seen = clock;
+            sfc->last_seen = *clock;
             if(bpf_map_update_elem(&sfc_lane_map, (__u32 *)&i, sfc, BPF_ANY) < 0)
                 return -1;
             return i;
@@ -82,7 +82,7 @@ __u32 assign_lane(struct in6addr *new_segs, __u64 *clock)
         
         int eq = 0;
         for(int j = 0; j < SEG_LEN; j++){
-            if(new_segs[i] != sfc->segments[i])
+            if(new_segs[j] != sfc->segments[j])
                 eq = -1;
                 break;
         }
@@ -94,9 +94,9 @@ __u32 assign_lane(struct in6addr *new_segs, __u64 *clock)
     }
 
     // if no stored srh matches and no lane is free -> new sfc -> evict oldest lane
-    oldest_sfc.segments = new_segs;
-    oldest_sfc.last_seen = *clock;
-    if (bpf_map_update_elem(&sfc_lane_map, (__u32 *)i, (void *)oldest_sfc, BPF_ANY) < 0)
+    oldest_sfc->segments = new_segs;
+    oldest_sfc->last_seen = *clock;
+    if (bpf_map_update_elem(&sfc_lane_map, (__u32 *)oldest_lane, (void *)oldest_sfc, BPF_ANY) < 0)
         return -1;
 
     return oldest_lane;
@@ -190,13 +190,13 @@ int decap(struct xdp_md *ctx)
     // just choose first slot for now
     //__u32 slot = SLOT;
     clock++; // ensure clock is always bigger than 0
-    lane = assign_lane(p->srh->segments, clock);
+    __u32 lane = assign_lane(p->srh->segments, clock);
     if(lane < 0)
-        bpf_printk("Lane assignemnt is negative.")
+        bpf_printk("Lane assignemnt is negative.");
         return XDP_DROP;
 
     if(lane >= N)
-        bpf_printk("assigned lane is bigger than #lanes")
+        bpf_printk("assigned lane is bigger than #lanes");
         return XDP_DROP;
 
     /*
