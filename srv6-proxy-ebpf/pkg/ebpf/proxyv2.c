@@ -23,6 +23,84 @@ struct {
     __type(value, __u32);
 } link_index_table SEC(".maps");
 
+// per cpu map to store the sfc's momentarily occupying the lanes: { lane_index -> sfc }
+struct {
+    __uint(type, BPF_MAP_PERCPU_TYPE_ARRAY);
+    __uint(max_entries, N);
+    __type(key, __u32);
+    __type(value, struct sfc);
+} sfc_lane_map SEC(".maps");
+
+// one-entry clock map storing a monotonic clock value increasing on each SRv6 packet
+struct {
+    __uint(type, BPF_MAP_PERCPU_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u64);
+} clock_map SEC(".maps");
+
+
+/*
+FUNCTIONS
+*/
+
+__u32 assign_lane(struct in6addr *new_segs, __u64 *clock)
+{
+    __u32 oldest_lane; // stores the lane to be evicted if new_segs is a new SFC
+    __u64 oldest_time = 2^63; // initialize to max of allowed distance between two packets
+    struct sfc *oldest_sfc;
+
+    // proof length of new_segs
+    __u32 NEW_SEG_LEN = sizeof(new_segs);
+    if(NEW_SEG_LEN < 1 || NEW_SEG_LEN > 128)
+        return -1;
+
+    for(int i = 0; i < N; i++){
+        // no locking needed, map is per cpu and per target dispatcher
+        sfc = bpf_map_lookup_elem(&sfc_lane_map, &i); // initialized with 
+
+        if (!sfc)
+            return -1;
+        
+        if(sfc->last_seen == 0){ // means lane was not assigned yet and is free
+            sfc->last_seen = clock;
+            if(bpf_map_udpated_elem(&sfc_lane_map, (__u32 *)&i, &sfc, ) < 0)
+                return -1;
+            return i;
+        }
+        
+        __u32 SEG_LEN = sizeof(sfc->segments);
+        
+        if((SEG_LEN < 1 || SEG_LEN > 128) || SEG_LEN != NEW_SEG_LEN)
+            continue;
+
+        // update eviction candidate (account for clock wrap)
+         if((int64_t)(sfc->last_seen - oldest_time) < 0)
+            oldest_time = sfc->last_seen;
+            oldest_lane = i;
+            oldest_sfc = sfc; // kep reference eviction candidate
+        
+        bool eq = true;
+        for(int j = 0; j < SEG_LEN; j++){
+            if(new_segs[i] != sfc->segments[i])
+                eq = false;
+                break;
+        }
+
+        // segment list is the same -> put incoming packet on the same lane and updated sfc age
+        if(eq)
+            sfc->last_seen = *clock;
+            return i;
+    }
+
+    // if no stored srh matches and no lane is free -> new sfc -> evict oldest lane
+    oldest_sfc.segments = new_segs;
+    oldest_sfc.last_seen = *clock;
+    if (bpf_map_update_elem(&sfc_lane_map, (__u32 *)i, (void *)oldest_sfc, BPF_ANY) < 0)
+        return -1;
+
+    return oldest_lane;
+}
 
 /*
 PROGRAMS
@@ -30,8 +108,14 @@ PROGRAMS
 
 SEC("xdp")
 int decap(struct xdp_md *ctx)
-{
+{   
     bpf_printk("Entered decap program");
+
+    __u64 *clock = bpf_map_lookup_elem(&clock_map, (__u32 *)1); // TODO: 0-initialize in setup
+
+    if(!clock)
+        bpf_printk("Could not get clock in decap.")
+        return XDP_DROP;
     /*
     PARSE ETH + IPv6 + SRH + INNER VERSION and PROVE PACKET BOUNDS
     */
@@ -101,16 +185,25 @@ int decap(struct xdp_md *ctx)
     }*/
 
     /*
-    SELECT THE SERVICE CHAIN SLOT
+    SELECT THE SERVICE CHAIN SLOT/LANE
     */
     // just choose first slot for now
-    __u32 slot = SLOT;
+    //__u32 slot = SLOT;
+    clock++; // ensure clock is always bigger than 0
+    lane = assign_lane(p->srh->segments, clock);
+    if(lane < 0)
+        bpf_printk("Lane assignemnt is negative.")
+        return XDP_DROP;
+
+    if(lane >= N)
+        bpf_printk("assigned lane is bigger than #lanes")
+        return XDP_DROP;
 
     /*
     READ CACHED ENTRY
     */
     // |-------ZERO-INITIALIZED-BY-GO-PROGRAM-------|
-    struct cached_outer *cached = bpf_map_lookup_elem(&srh_table, &slot);
+    struct cached_outer *cached = bpf_map_lookup_elem(&srh_table, &lane);
     if (!cached) 
         return XDP_DROP;
     
@@ -153,8 +246,8 @@ int decap(struct xdp_md *ctx)
         return XDP_DROP;
 
     // lookup mac addresses
-    __u32 src_key = slot;
-    __u32 dst_key = N + slot;
+    __u32 src_key = lane;
+    __u32 dst_key = N + lane;
     bpf_printk("Retrieving mac's with keys: src (%u), dst (%u)", src_key, dst_key);
     struct mac_entry *src_mac = bpf_map_lookup_elem(&mac_addr_table, &src_key);
     struct mac_entry *dst_mac = bpf_map_lookup_elem(&mac_addr_table, &dst_key);
@@ -189,7 +282,7 @@ int decap(struct xdp_md *ctx)
     */
 
     // lookup interface index
-    __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &slot);
+    __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &lane);
     if (!link_index || !*link_index)
         return XDP_DROP;
 
