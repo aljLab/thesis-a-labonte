@@ -100,38 +100,46 @@ int update_srh(struct parsed_srh *p, void *end)
 
     if(index >= (p->srh_len - 8)/sizeof(struct in6_addr)) // ensure index is not bigger than the actual length of the segment list
         return -1;
+    if((void *)((struct in6_addr *)p->srh->segments + index + 1) > end)
+        return -1;
     
-    __builtin_memcpy((void *)&(p->ip6->daddr), (void *)&p->srh->segments[index], sizeof(p->ip6->daddr));
+    __builtin_memcpy((void *)&(p->ip6->daddr), (void *)((struct in6_addr *)p->srh->segments + index), sizeof(p->ip6->daddr));
 
     bpf_printk("Decap: Updated the SRH.");
     return 0;
 }
 
-static __always_inline
+static __noinline
 int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *clock, __u32 *lane, void *end)
-{
-    __s32 oldest_lane; // stores the lane to be evicted if new_segs is a new SFC
+{   
+    (*lane) = 0; // test
+    return 0;
+    __s32 oldest_lane = -1; // stores the lane to be evicted if new_segs is a new SFC
     __u64 oldest_time = 1ULL << 63; // initialize to max of allowed distance between two packets
-    struct sfc_t *oldest_sfc;
+    struct sfc_t *oldest_sfc = NULL;
 
     // proof length of new_segs
     __u32 NEW_SEG_LEN = n_seg;
     if(NEW_SEG_LEN < 1 || NEW_SEG_LEN > 128)
         return -1;
-
-    for(__s32 i = 0; i < N; i++){
-        struct sfc_t *sfc = bpf_map_lookup_elem(&sfc_lane_map, &i); // initialized with 
+    __u32 n = N;
+    if(n > 16)
+        n = 16;
+    #pragma unroll
+    for(__u32 i = 0; i < n; i++){
+        __u32 key = i;
+        struct sfc_t *sfc = bpf_map_lookup_elem(&sfc_lane_map, &key);
 
         if (!sfc)
             return -1;
         
         if(sfc->last_seen == 0){ // means lane was not assigned yet and is free
             //__builtin_memcpy((void *)sfc->segments, (void *)new_segs, NEW_SEG_LEN);
-            if(n_seg >= sfc->n_segs) return -1;
-            for(__u32 j = 0; j < MAX_SEGLIST_LEN; j++){
+            if(n_seg > MAX_SEGLIST_LEN / 16) return -1;
+            for(__u32 j = 0; j < (MAX_SEGLIST_LEN / 16); j++){
                 if(j >= n_seg) break;
                 if((void *)((struct in6_addr *)new_segs + j + 1) > end) return -1;
-                __builtin_memcpy((void *)(sfc + j), (void *)((struct in6_addr *)new_segs + j), sizeof(struct in6_addr));
+                __builtin_memcpy((void *)((struct in6_addr *)sfc->segments + j), (void *)((struct in6_addr *)new_segs + j), sizeof(struct in6_addr));
             }
             sfc->n_segs = n_seg;
             sfc->last_seen = *clock;
@@ -141,24 +149,28 @@ int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *clock, __u32 *lan
         
         __u32 SEG_LEN = sfc->n_segs;
         
-        if((SEG_LEN < 1 || SEG_LEN > 128) || SEG_LEN != NEW_SEG_LEN)
-            continue;
-
         // update eviction candidate (account for clock wrap)
-         if((__s64)(sfc->last_seen - oldest_time) < 0){
+        if((__s64)(sfc->last_seen - oldest_time) < 0){
             oldest_time = sfc->last_seen;
             oldest_lane = i;
             oldest_sfc = sfc; // kep reference eviction candidate
         }
+
+        if((SEG_LEN < 1 || SEG_LEN > 128) || SEG_LEN != NEW_SEG_LEN)
+            continue;
+
         __u8 equal = 0;
         if(sfc->n_segs == n_seg){
-            if(n_seg >= sfc->n_segs) return -1;
             for(int j = 0; j < 128; j++){
-                if(j > n_seg) break;
+                barrier_var(j); // keep clang from changing it
+                if(j >= n_seg || j >= sizeof(sfc->segments)) break;
                 if((void *)((struct in6_addr *)new_segs + j + 1) > end) return -1;
                 
-                if(__builtin_memcmp((void *)((struct in6_addr*)new_segs + j), (void *)((struct in6_addr *)sfc->segments + j) , sizeof(struct in6_addr)) != 0)
-                    equal = 1;
+                /* if(__builtin_memcmp((void *)((struct in6_addr*)new_segs + j), (void *)((struct in6_addr *)sfc->segments + j) , sizeof(struct in6_addr)) != 0)
+                    equal = 1; */
+                const __u64 *a = (const __u64 *)(new_segs + j);
+                const __u64 *b = (const __u64 *)(&sfc->segments[j]);
+                if (a[0] != b[0] || a[1] != b[1]) { equal = 1; break; }
             }
         } else {
             equal = 1;
@@ -172,28 +184,19 @@ int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *clock, __u32 *lan
         }
     }
 
+    if(oldest_lane < 0 || !oldest_sfc)
+        return -1;
     // if no stored srh matches and no lane is free -> new sfc -> evict oldest lane
     // __builtin_memcpy((void *)oldest_sfc->segments, (void *)new_segs, NEW_SEG_LEN);
-    if(n_seg > oldest_sfc->n_segs) return -1;
-    for(__u32 i = 0; i < MAX_SEGLIST_LEN; i++){
+    if(n_seg > MAX_SEGLIST_LEN / 16) return -1;
+    for(__u32 i = 0; i < (MAX_SEGLIST_LEN / 16); i++){
         if(i >= n_seg) break;
         if((void *)((struct in6_addr *)new_segs + i + 1) > end) return -1;
-        __builtin_memcpy((void *)(oldest_sfc + i), (void *)((struct in6_addr *)new_segs + i), sizeof(struct in6_addr));
+        __builtin_memcpy((void *)((struct in6_addr *)oldest_sfc->segments + i), (void *)((struct in6_addr *)new_segs + i), sizeof(struct in6_addr));
     }
     oldest_sfc->last_seen = *clock;
     oldest_sfc->n_segs = n_seg;
     *(lane) = oldest_lane;
-    return 0;
-}
-
-static __always_inline
-int get_cached_header(struct cached_outer *cached, __u32 *lane)
-{
-    cached = bpf_map_lookup_elem(&srh_table, lane);
-
-    if(!cached)
-        return -1;
-    
     return 0;
 }
 
@@ -213,8 +216,10 @@ int update_cached_header(struct cached_outer *cached, char *hdr, __u32 *lane, __
     for(__u32 i = 0; i < MAX_SRH_LEN + sizeof(struct ipv6hdr); i++){
         if(i >= len)
             break;
-        if((void *)(hdr + i + 1) > end)
+        if((void *)(hdr + i + 1) > end){
+            bpf_spin_unlock(&cached->lock);
             return -1;
+        }
         cached->bytes[i] = hdr[i];
     }
     bpf_spin_unlock(&cached->lock);
@@ -272,15 +277,6 @@ int update_eth_hdr(void *start, void *end, __u32 lane)
     return 0;
 }
 
-static __always_inline
-int get_link_index(__u32 *idx, __u32 *lane)
-{
-    idx = bpf_map_lookup_elem(&link_index_table, lane);
-    if (!idx || !*idx)
-        return -1;
-    return 0;
-}
-
 SEC("xdp")
 int decap(struct xdp_md *ctx)
 {   
@@ -309,7 +305,8 @@ int decap(struct xdp_md *ctx)
         return XDP_DROP;
     // fetch cached header based on lane
     struct cached_outer *cached;
-    if(get_cached_header(cached, &lane) < 0)
+    cached = bpf_map_lookup_elem(&srh_table, &lane);
+    if(!cached)
         return XDP_DROP;
     // update cached header
     if(update_cached_header(cached, (char *)p->ip6, &lane, p->outer_len, end) < 0)
@@ -329,10 +326,17 @@ int decap(struct xdp_md *ctx)
     if(update_eth_hdr(start, end, lane) < 0)
         return XDP_DROP;
 
+    bpf_printk("working in lane %u", (void *)lane);
     // fetch linkIndex of outgoing lane interface
-    __u32 *link_index;
-    if(get_link_index(link_index, &lane) < 0)
+    __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &lane);
+    
+    if(!link_index || !*link_index){
+        bpf_printk("!linkIndex");
         return XDP_DROP;
+    }
 
+    bpf_printk("redirecting packet out of %u", *link_index);
     return bpf_redirect(*link_index, 0);
 }
+
+char LICENSE[] SEC("license") = "GPL";

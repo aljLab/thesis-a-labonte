@@ -42,7 +42,7 @@ struct mac_entry {
 
 struct sfc_t {
     __u64 last_seen; // monotonic clock value of last encounter of traffic from this service chain
-    struct in6_addr *segments;
+    struct in6_addr segments[128];
     __u32 n_segs;
 };
 

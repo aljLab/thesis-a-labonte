@@ -39,7 +39,7 @@ func main() {
         log.Fatalf("Could not setup networking: %s", err)
     }
 
-    fmt.Printf("Set Up Networking")
+    fmt.Printf("Set Up Networking\n")
 
     n := len(conf.InIfaces)
     ctx := context.Background()
@@ -72,10 +72,6 @@ func main() {
 				},
             },
 	)
-
-    if err != nil {
-        log.Fatalf("Error when creating collection: %s", err);
-    }
     
     // check verifier errors
     var ve *ebpf.VerifierError
@@ -83,7 +79,11 @@ func main() {
 		fmt.Printf("Verifier log (%d lines):\n", len(ve.Log))
 		fmt.Println(strings.Join(ve.Log, "\n"))
 		os.Exit(-1)
-	}
+	} else {
+        if err != nil {
+            log.Fatalf("Error when creating collection: %s", err);
+        }
+    }
     fmt.Printf("Is err really nil: %s? is base not nil %s?\n", err, base)
     fmt.Printf("Created Collection, no verifier errors... Trying to defer closing the collection\n")
 
@@ -116,9 +116,13 @@ func main() {
         }
     }
 
+    log.Printf("MacIndexMap %s\n", macIndexMap)
+
+
     // Link-index keys 0..n-1 point to the toVNF interfaces.
     i := 0
     for _, iface := range macIndexMap {
+        log.Printf("iface: \n", iface.LinkIndex);
         // inIfaces..., OutIfaces..., DispatchVeth, RoutingBridge
         // put LinkIndex in correct spot in LinIndex
         if err := linkMap.Put(uint32(i), uint32(iface.LinkIndex)); err != nil {
@@ -137,7 +141,7 @@ func main() {
     }
 
     // init per cpu map
-    zeroValue = make([]byte, 16)
+    zeroValue = make([]byte, 2064)
     for i := range n {
         if err := sfcLaneMap.Put(uint32(i), zeroValue); err != nil {
             log.Fatal("populating sfc lane map: ", err)
