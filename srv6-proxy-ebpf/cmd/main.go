@@ -25,7 +25,7 @@ const (
 )
 
 func main() {
-	filePath := "pkg/ebpf/proxyv2.c"
+	filePath := "pkg/ebpf/proxyv3.c"
 
 	conf := setup.Config{
         InIfaces: []string{"bf-00", "bf-10"},
@@ -50,7 +50,7 @@ func main() {
     }
     defer os.RemoveAll(tmp)
 
-    fmt.Printf("Compiling programs")
+    fmt.Printf("Compiling programs\n")
     // compile the ebpf programs
     baseObj := filepath.Join(tmp, "base.o")
     compileBPF(ctx, filePath, baseObj, n, 0)
@@ -72,6 +72,10 @@ func main() {
 				},
             },
 	)
+
+    if err != nil {
+        log.Fatalf("Error when creating collection: %s", err);
+    }
     
     // check verifier errors
     var ve *ebpf.VerifierError
@@ -80,6 +84,8 @@ func main() {
 		fmt.Println(strings.Join(ve.Log, "\n"))
 		os.Exit(-1)
 	}
+    fmt.Printf("Is err really nil: %s? is base not nil %s?\n", err, base)
+    fmt.Printf("Created Collection, no verifier errors... Trying to defer closing the collection\n")
 
     defer base.Close()
 

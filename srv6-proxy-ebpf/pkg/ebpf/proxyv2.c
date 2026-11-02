@@ -44,14 +44,14 @@ struct {
 FUNCTIONS
 */
 
-__u32 assign_lane(struct in6_addr *new_segs, __u64 *clock)
+__u32 assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *clock)
 {
     __s32 oldest_lane; // stores the lane to be evicted if new_segs is a new SFC
     __u64 oldest_time = 1ULL << 63; // initialize to max of allowed distance between two packets
     struct sfc_t *oldest_sfc;
 
     // proof length of new_segs
-    __u32 NEW_SEG_LEN = sizeof(new_segs);
+    __u32 NEW_SEG_LEN = n_seg;
     if(NEW_SEG_LEN < 1 || NEW_SEG_LEN > 128)
         return -1;
 
@@ -63,12 +63,13 @@ __u32 assign_lane(struct in6_addr *new_segs, __u64 *clock)
         
         if(sfc->last_seen == 0){ // means lane was not assigned yet and is free
             __builtin_memcpy((void *)sfc->segments, (void *)new_segs, NEW_SEG_LEN);
+            sfc->n_segs = n_segs;
             sfc->last_seen = *clock;
             
             return i;
         }
         
-        __u32 SEG_LEN = sizeof(sfc->segments);
+        __u32 SEG_LEN = sfc->n_segs;
         
         if((SEG_LEN < 1 || SEG_LEN > 128) || SEG_LEN != NEW_SEG_LEN)
             continue;
@@ -80,6 +81,7 @@ __u32 assign_lane(struct in6_addr *new_segs, __u64 *clock)
             oldest_sfc = sfc; // kep reference eviction candidate
         }
         if (__builtin_memcmp(new_segs, sfc->segments, SEG_LEN) == 0) {
+            sfc->n_segs = n_segs;
             sfc->last_seen = *clock;
             return i;
         }
@@ -88,7 +90,7 @@ __u32 assign_lane(struct in6_addr *new_segs, __u64 *clock)
     // if no stored srh matches and no lane is free -> new sfc -> evict oldest lane
     __builtin_memcpy((void *)oldest_sfc->segments, (void *)new_segs, NEW_SEG_LEN);
     oldest_sfc->last_seen = *clock;
-
+    oldest_sfc->n_segs = n_segs;
     return oldest_lane;
 }
 
@@ -198,7 +200,13 @@ int decap(struct xdp_md *ctx)
     // just choose first slot for now
     //__u32 slot = SLOT;
     (*clock)++; // ensure clock is always bigger than 0
-    __s32 lane = assign_lane(p->srh->segments, clock);
+
+    __u32 seg_len = (SRH_LEN - 8)/ sizeof(struct in6addr);
+    __u32 seg_bytes = seg_len * sizeof(struct in6_addr);
+    if(seg_len == 0 || seg_len > MAX_SEGS)
+        return XDP_DROP;
+
+    __s32 lane = assign_lane(p->srh->segments, seg_len, clock);
     if(lane < 0){
         bpf_printk("Lane assignemnt is negative.");
         return XDP_DROP;

@@ -43,6 +43,7 @@ struct mac_entry {
 struct sfc_t {
     __u64 last_seen; // monotonic clock value of last encounter of traffic from this service chain
     struct in6_addr *segments;
+    __u32 n_segs;
 };
 
 struct ipv6_sr_hdr {
@@ -64,4 +65,5 @@ struct parsed_srh {
     __u32 srh_len;
     __u32 outer_len;
     __u16 next_proto;
+    __u32 n_segs;
 };
