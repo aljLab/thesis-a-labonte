@@ -13,16 +13,13 @@ CONSTANTS
 #error "Compile with -DN=<number of service chains>"
 #endif
 
-#ifndef SLOT
-#define SLOT 0
-#endif
-
-#define MAX_SEGLIST_LEN 2048 // 256 (8-bit hdrextLen field) 8-byte blocks -> excluding the first 8 bytes: only segs and tlvs!
+#define MAX_LANES 8
+#define MAX_SEGMENTS 128
+#define MAX_COMP_SEGMENTS 128
+#define MAX_SEGLIST_BYTES MAX_SEGMENTS*16 // 256 (8-bit hdrextLen field) 8-byte blocks -> excluding the first 8 bytes: only segs and tlvs!
 #define RH_SIZE 8
-#define MAX_SRH_LEN 2048 + RH_SIZE// 256 (8-bit hdrextLen field) 8-byte blocks + the first 8 octets
+#define MAX_SRH_LEN MAX_SEGLIST_BYTES + RH_SIZE// 256 (8-bit hdrextLen field) 8-byte blocks + the first 8 octets
 #define MAX_CACHED_HDR (sizeof(struct ipv6hdr) + MAX_SRH_LEN) // account for routing header
-#define FNV_32_PRIME 0x01000193
-#define FNV1_32_INIT 0x811C9DC5
 
 /*
 STRUCTS
@@ -42,7 +39,7 @@ struct mac_entry {
 
 struct sfc_t {
     __u64 last_seen; // monotonic clock value of last encounter of traffic from this service chain
-    struct in6_addr segments[128];
+    struct in6_addr segments[MAX_SEGMENTS];
     __u32 n_segs;
 };
 
@@ -67,3 +64,7 @@ struct parsed_srh {
     __u16 next_proto;
     __u32 n_segs;
 };
+
+struct lane_meta {
+    __u32 lane;
+} __attribute__((aligned(4)));

@@ -7,7 +7,7 @@ struct {
     __type(value, struct cached_outer); // the cached header structure (lock + len + IPv6 + SRH)
 } srh_table SEC(".maps");
 
-// read-only
+// not modified by xdp programs
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 2 * N + 2);
@@ -15,7 +15,7 @@ struct {
     __type(value, struct mac_entry); // the mac addresses fromVNF interface belonging to this lane 
 } mac_addr_table SEC(".maps");
 
-// read-only
+// not modified by xdp programs
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 2 * N + 2);
@@ -23,7 +23,7 @@ struct {
     __type(value, __u32); // the associated toVNF interface to put out decapsulated traffic
 } link_index_table SEC(".maps");
 
-// read-only
+// not modified by xdp programs
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, N);
@@ -36,7 +36,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, N);
     __type(key, __u32); // lane idx
-    __type(value, struct sfc_t); // age and content information on recently seen, todo: add locking
+    __type(value, struct sfc_t); // age and content information on recently seen
 } sfc_lane_map SEC(".maps");
 
 // one-entry clock map storing a monotonic clock value increasing on each SRv6 packet
@@ -47,10 +47,33 @@ struct {
     __type(value, __u64); // clock value TODO: add locking
 } clock_map SEC(".maps");
 
+// not modified by xdp programs
+struct {
+    __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u32);
+} progs SEC(".maps");
 
 /*
 DECAP FUNCTIONS
 */
+static __always_inline
+int read_lane_from_meta(void *data_meta, void *start, __u32 *lane)
+{
+    if(data_meta >= start)
+        return -1;
+    
+    if((void *)((char *)data_meta + sizeof(struct lane_meta)) > start)
+        return -1;
+
+    struct lane_meta *meta = data_meta;
+    if(meta->lane > MAX_LANES)
+        return -1;
+
+    (*lane) = meta->lane;
+    return 0;
+}
 
 static __always_inline
 int parse_packet(struct parsed_srh *p, void *start, void *end)
@@ -115,22 +138,53 @@ int update_srh(struct parsed_srh *p, void *end)
     return 0;
 }
 
-static __noinline
+static __always_inline
+int update_lane_cache(struct in6_addr *new_segs, __u32 n_seg, struct sfc_t *sfc, void *end)
+{
+    // calling program takes care of locking
+    if(n_seg > MAX_SEGMENTS) return -1;
+    //if((void *)(new_segs + n_seg + 1) > end) return -1;
+    for(__u32 i = 0; i < MAX_SEGMENTS; i++){
+        if(i >= n_seg) break;
+        if((void *)((struct in6_addr *)new_segs + i + 1) > end) return -1;
+        __builtin_memcpy((void *)((struct in6_addr *)sfc->segments + i), (void *)((struct in6_addr *)new_segs + i), sizeof(struct in6_addr));
+    }
+
+    return 0;
+}
+
+static __always_inline
+int compare_seg_lists(struct sfc_t *sfc, struct in6_addr *new_segs, __u8 *equal, void *end, __u32 n_seg)
+{
+    for(int j = 0; j < MAX_COMP_SEGMENTS; j++){
+        barrier_var(j); // keep clang from changing it
+        if(j >= n_seg || j >= sizeof(sfc->segments)) break;
+        if((void *)((struct in6_addr *)new_segs + j + 1) > end) return -1;
+        
+        const __u64 *a = (const __u64 *)(new_segs + j);
+        const __u64 *b = (const __u64 *)(&sfc->segments[j]);
+        if (a[0] != b[0] || a[1] != b[1]) { (*equal) = 1; break; }
+    }
+    return 0;
+}
+
+static __always_inline
 int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *clock, __u32 *lane, void *end)
 {   
-    (*lane) = 0; // test
-    return 0;
+    // (*lane) = 0; // test
+    // return 0;
     __s32 oldest_lane = -1; // stores the lane to be evicted if new_segs is a new SFC
     __u64 oldest_time = 1ULL << 63; // initialize to max of allowed distance between two packets
     struct sfc_t *oldest_sfc = NULL;
 
     // proof length of new_segs
     __u32 NEW_SEG_LEN = n_seg;
-    if(NEW_SEG_LEN < 1 || NEW_SEG_LEN > 128)
+    if(NEW_SEG_LEN < 1 || NEW_SEG_LEN > MAX_SEGMENTS)
         return -1;
     __u32 n = N;
-    if(n > 16)
-        n = 16;
+    if(n > MAX_LANES)
+        n = MAX_LANES;
+    
     #pragma unroll
     for(__u32 i = 0; i < n; i++){
         __u32 key = i;
@@ -138,15 +192,10 @@ int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *clock, __u32 *lan
 
         if (!sfc)
             return -1;
-        
+    
         if(sfc->last_seen == 0){ // means lane was not assigned yet and is free
-            //__builtin_memcpy((void *)sfc->segments, (void *)new_segs, NEW_SEG_LEN);
-            if(n_seg > MAX_SEGLIST_LEN / 16) return -1;
-            for(__u32 j = 0; j < (MAX_SEGLIST_LEN / 16); j++){
-                if(j >= n_seg) break;
-                if((void *)((struct in6_addr *)new_segs + j + 1) > end) return -1;
-                __builtin_memcpy((void *)((struct in6_addr *)sfc->segments + j), (void *)((struct in6_addr *)new_segs + j), sizeof(struct in6_addr));
-            }
+            if(update_lane_cache(new_segs, n_seg, sfc, end) < 0)
+                return -1;
             sfc->n_segs = n_seg;
             sfc->last_seen = *clock;
             *(lane) = i;
@@ -159,25 +208,17 @@ int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *clock, __u32 *lan
         if((__s64)(sfc->last_seen - oldest_time) < 0){
             oldest_time = sfc->last_seen;
             oldest_lane = i;
-            oldest_sfc = sfc; // kep reference eviction candidate
+            oldest_sfc = sfc; // reference eviction candidate
         }
 
-        if((SEG_LEN < 1 || SEG_LEN > 128) || SEG_LEN != NEW_SEG_LEN)
+        if((SEG_LEN < 1 || SEG_LEN > MAX_SEGMENTS) || SEG_LEN != NEW_SEG_LEN)
             continue;
 
         __u8 equal = 0;
-        if(sfc->n_segs == n_seg){
-            for(int j = 0; j < 128; j++){
-                barrier_var(j); // keep clang from changing it
-                if(j >= n_seg || j >= sizeof(sfc->segments)) break;
-                if((void *)((struct in6_addr *)new_segs + j + 1) > end) return -1;
-                
-                /* if(__builtin_memcmp((void *)((struct in6_addr*)new_segs + j), (void *)((struct in6_addr *)sfc->segments + j) , sizeof(struct in6_addr)) != 0)
-                    equal = 1; */
-                const __u64 *a = (const __u64 *)(new_segs + j);
-                const __u64 *b = (const __u64 *)(&sfc->segments[j]);
-                if (a[0] != b[0] || a[1] != b[1]) { equal = 1; break; }
-            }
+        if(SEG_LEN == NEW_SEG_LEN){
+            int ret = compare_seg_lists(sfc, new_segs, &equal, end, n_seg);
+            if(ret < 0)
+                return -1;
         } else {
             equal = 1;
         }
@@ -185,6 +226,7 @@ int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *clock, __u32 *lan
         if (equal == 0) {
             sfc->n_segs = n_seg;
             sfc->last_seen = *clock;
+
             *(lane) = i;
             return 0;
         }
@@ -192,14 +234,12 @@ int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *clock, __u32 *lan
 
     if(oldest_lane < 0 || !oldest_sfc)
         return -1;
+
     // if no stored srh matches and no lane is free -> new sfc -> evict oldest lane
-    // __builtin_memcpy((void *)oldest_sfc->segments, (void *)new_segs, NEW_SEG_LEN);
-    if(n_seg > MAX_SEGLIST_LEN / 16) return -1;
-    for(__u32 i = 0; i < (MAX_SEGLIST_LEN / 16); i++){
-        if(i >= n_seg) break;
-        if((void *)((struct in6_addr *)new_segs + i + 1) > end) return -1;
-        __builtin_memcpy((void *)((struct in6_addr *)oldest_sfc->segments + i), (void *)((struct in6_addr *)new_segs + i), sizeof(struct in6_addr));
-    }
+
+    if(update_lane_cache(new_segs, n_seg, oldest_sfc, end) < 0)
+        return -1;
+
     oldest_sfc->last_seen = *clock;
     oldest_sfc->n_segs = n_seg;
     *(lane) = oldest_lane;
@@ -232,6 +272,7 @@ int update_cached_header(struct cached_outer *cached, char *hdr, __u32 *lane, __
 
     return 0;
 }
+
 static __always_inline
 int cp_ethhdr_in_front_of_inner(struct parsed_srh *p)
 {
@@ -276,6 +317,24 @@ int update_eth_hdr(void *start, void *end, __u32 lane)
         return -1;
     }
 
+    return 0;
+}
+
+// filter everything non-SRv6
+static __always_inline
+int filter_srv6_traffic(struct parsed_srh *p)
+{
+    __u8 version = *((__u8 *)(p->ip6)) >> 4;
+    if(version != 6){
+        bpf_printk("Filtered non-ipv6 traffic");
+        return -1;
+    }
+    if(p->ip6->nexthdr != 43){
+        bpf_printk("Filtered non-SRv6 ipv6 traffic");
+        return -1;
+    }
+    if(p->ip6->hop_limit < 2)
+        return -1;
     return 0;
 }
 
@@ -356,7 +415,7 @@ int update_ethhdr_encap(struct ethhdr *eth, void *end)
 }
 
 static __always_inline
-int update_nxthdr(struct ethhdr *eth, void *end)
+int update_nxthdr(struct ethhdr *eth, void *end, __u8 version)
 {
     if((void *) eth + 1 > end)
         return -1;
@@ -384,31 +443,98 @@ int update_nxthdr(struct ethhdr *eth, void *end)
     return 0;
 }
 
+
+/*
+*
+eBPF PROGRAMS
+*
+*/
+
+// classify_sfc filters out non-SRv6 traffic and assigns a lane for the traffic.
+// To classify, the SRH of the incoming packet is compared against a lane cache.
+// The lane cache stores the segment list identifying the sfc occupying each lane. 
+// If segment lists are equal, the incoming packet is put into the matching lane.
+// If a lane is unoccupied, the packet picks the free one first to maximize utilization.
+// If no lane is free, the oldest sfc (based on time since last packet belonging to this sfc) is evicted.
+// The lane assignment (governing the bpf_redirect in decap) is passed on via packet meta.
 SEC("xdp")
-int decap(struct xdp_md *ctx)
+int classify_sfc(struct xdp_md *ctx)
 {   
     __u32 clock_index = 0;
     __u64 *clock = bpf_map_lookup_elem(&clock_map, &clock_index);
 
     if(!clock)
-        return XDP_DROP;
+        return XDP_ABORTED;
+    
+    if(bpf_xdp_adjust_meta(ctx, -(int)sizeof(struct lane_meta)) < 0)
+        return XDP_ABORTED;
     
     void *start = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
+    void *meta = (void *)(long)ctx->data_meta;
+
+    if (meta + sizeof(struct lane_meta) > start)
+        return XDP_ABORTED;
 
     struct parsed_srh parsed = {};
     struct parsed_srh *p = &parsed;
     // parse packet
     if(parse_packet(p, start, end) < 0)
         return XDP_DROP;
+    
+    if(filter_srv6_traffic(p) < 0)
+        return XDP_DROP; // maybe pass on? need to ensure that not encaped
+    
+     __u32 lane = 0;
+    (*clock)++; // ensure clock is always bigger than 0
+
+    if(assign_lane(p->srh->segments, p->n_segs, clock, &lane, end) < 0)
+        return XDP_ABORTED;
+    
+    struct lane_meta *lane_meta = (struct lane_meta *)meta;
+    lane_meta->lane = lane;
+    bpf_printk("Calling tail...");
+    bpf_tail_call(ctx, &progs, 0);
+    return XDP_ABORTED;
+}
+
+SEC("xdp")
+int decap(struct xdp_md *ctx)
+{   
+   /*  __u32 clock_index = 0;
+    __u64 *clock = bpf_map_lookup_elem(&clock_map, &clock_index);
+
+    if(!clock)
+        return XDP_DROP;
+     */
+    void *start = (void *)(long)ctx->data;
+    void *end = (void *)(long)ctx->data_end;
+    void *meta = (void *)(long)ctx->data_meta;
+
+    bpf_printk("reading lane from meta...");
+
+    __u32 lane = 0;
+    if(read_lane_from_meta(meta, start, &lane) < 0)
+        return XDP_ABORTED;
+    
+    bpf_printk("read lane from meta with lane %u", lane);
+
+    struct parsed_srh parsed = {};
+    struct parsed_srh *p = &parsed;
+    // parse packet
+    if(parse_packet(p, start, end) < 0)
+        return XDP_DROP;
+    
+    /* if(filter_srv6_traffic(p) < 0)
+        return XDP_PASS; */
     // update SRH
     if(update_srh(p, end) < 0)
         return XDP_DROP;
     // assign lane
-    __u32 lane = 0;
+    /* __u32 lane = 0;
     (*clock)++; // ensure clock is always bigger than 0
     if(assign_lane(p->srh->segments, p->n_segs, clock, &lane, end) < 0)
-        return XDP_DROP;
+        return XDP_DROP; */
 
     // fetch cached header based on lane
     struct cached_outer *cached;
@@ -439,7 +565,7 @@ int decap(struct xdp_md *ctx)
     
     if(!link_index || !*link_index)
         return XDP_DROP;
-
+    bpf_printk("Sending decapsulated packet out of iface with index: %u", *link_index);
     return bpf_redirect(*link_index, 0);
 }
 
@@ -460,11 +586,13 @@ int encap(struct xdp_md *ctx)
     __u8 version = *((__u8 *)(eth + 1)) >> 4;
 
     __u32 key = ctx->ingress_ifindex;
+    bpf_printk("Received packet on ifindex: %u", key);
     // get lane from lane table (based on xdp_md->ingress_ifindex)
     __u32 *lane = bpf_map_lookup_elem(&lane_table, &key);
-
+    
     if(!lane)
         return XDP_DROP;
+    bpf_printk("Received packet for lane: %u", *lane);
 
     struct cached_outer *cached = bpf_map_lookup_elem(&srh_table, lane);
     if(!cached)
@@ -503,7 +631,7 @@ int encap(struct xdp_md *ctx)
         return XDP_DROP;
     
     // update nexthdr based on version observed previously
-    if(update_nxthdr(eth, end) < 0)
+    if(update_nxthdr(eth, end, version) < 0)
         return XDP_DROP;
 
     // lookup index of dispatcher veth

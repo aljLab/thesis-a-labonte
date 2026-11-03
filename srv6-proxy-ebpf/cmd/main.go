@@ -28,8 +28,8 @@ func main() {
 	filePath := "pkg/ebpf/proxyv3.c"
 
 	conf := setup.Config{
-        InIfaces: []string{"bf-00", "bf-10"},
-        OutIfaces: []string{"bf-01", "bf-11"},
+        InIfaces: []string{"bf-00", "bf-10", "bf-20", "bf-30"},
+        OutIfaces: []string{"bf-01", "bf-11", "bf-21", "bf-31"},
         BridgePortVeth: "routing-br-port",
         DispatchVeth: "dispatcher",
         RoutingBridgeName: "routing-bridge",
@@ -94,6 +94,7 @@ func main() {
     linkMap := base.Maps["link_index_table"]
     macMap := base.Maps["mac_addr_table"]
     laneMap := base.Maps["lane_table"]
+    tailcallMap := base.Maps["progs"]
 
     // per CPU / per target maps
     clockMap := base.Maps["clock_map"]
@@ -150,14 +151,20 @@ func main() {
         }
     }
 
+    decapProg := base.Programs["decap"]
+    // init prog map
+    err = tailcallMap.Put(uint32(0), decapProg); if err != nil {
+        log.Fatal("populating tailcall map: ", err)
+    }
+
     fmt.Println("Initialized all map values\n")
 
 	/*
     * Attach decap to dispatcher
 	*/
 
-    decapProg := base.Programs["decap"]
-    if decapProg == nil {
+    classifyProg := base.Programs["classify_sfc"]
+    if classifyProg == nil {
         log.Fatal("decap program missing")
     }
 
@@ -170,11 +177,11 @@ func main() {
 
     decapIndex := macIndexMappings[2*n].LinkIndex
     decapLink, err := link.AttachXDP(link.XDPOptions{
-        Program:   decapProg,
+        Program:   classifyProg,
         Interface: int(decapIndex),
     })
     if err != nil {
-        log.Fatal("attach decap: ", err)
+        log.Fatal("attach classify prog (-> tailcall to decap): ", err)
     }
     links = append(links, decapLink)
 
