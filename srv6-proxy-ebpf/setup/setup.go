@@ -70,7 +70,7 @@ func ensureVeth(name, peer string) {
 // Idempotent: safe to call repeatedly, existing objects are reused, and failures
 // are logged rather than returned. The returned error is always nil; the
 // signature is kept so callers don't change.
-func Setup(conf *Config) (map[string]MacIndexMapping, error) {
+func Setup(conf *Config) ([]MacIndexMapping, error) {
 	if len(conf.InIfaces) != len(conf.OutIfaces) {
 		log.Printf("setup: InIfaces (%d) and OutIfaces (%d) differ in length; pairing only the first %d",
 			len(conf.InIfaces), len(conf.OutIfaces), min(len(conf.InIfaces), len(conf.OutIfaces)))
@@ -114,9 +114,9 @@ func Setup(conf *Config) (map[string]MacIndexMapping, error) {
 		logErr("set "+name+" up", netlink.LinkSetUp(l))
 	}
 
-	// get the mac addresses and indices and populate return map with each endpoint: ifaceName -> {Mac, LinkIndex}
-	macIndexMap := make(map[string]MacIndexMapping, len(conf.InIfaces)+len(conf.OutIfaces)+2)
+	// get the mac addresses and indices and populate return array with each endpoint: ifaceName -> {Mac, LinkIndex}
 	// map order: inIfaces..., outifaces..., dispatchVeth, RoutingBridge
+	macIndexMappings := make([]MacIndexMapping, 0, len(conf.InIfaces)+len(conf.OutIfaces)+2)
 	var dispatchMac net.HardwareAddr
 	ordered := make([]string, 0, len(conf.InIfaces)+len(conf.OutIfaces)+2)
 	ordered = append(ordered, conf.InIfaces...)
@@ -131,7 +131,7 @@ func Setup(conf *Config) (map[string]MacIndexMapping, error) {
 		attrs := l.Attrs()
 		mac := make(net.HardwareAddr, len(attrs.HardwareAddr))
 		copy(mac, attrs.HardwareAddr)
-		macIndexMap[name] = MacIndexMapping{Mac: mac, LinkIndex: uint32(attrs.Index)}
+		macIndexMappings = append(macIndexMappings, MacIndexMapping{Mac: mac, LinkIndex: uint32(attrs.Index)})
 		if name == conf.DispatchVeth {
 			dispatchMac = mac
 		}
@@ -150,5 +150,5 @@ func Setup(conf *Config) (map[string]MacIndexMapping, error) {
 		}))
 	}
 
-	return macIndexMap, nil
+	return macIndexMappings, nil
 }

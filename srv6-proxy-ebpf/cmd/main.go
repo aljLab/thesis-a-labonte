@@ -35,7 +35,7 @@ func main() {
         RoutingBridgeName: "routing-bridge",
     }
 
-    macIndexMap, err := setup.Setup(&conf); if err != nil {
+    macIndexMappings, err := setup.Setup(&conf); if err != nil {
         log.Fatalf("Could not setup networking: %s", err)
     }
 
@@ -53,7 +53,7 @@ func main() {
     fmt.Printf("Compiling programs\n")
     // compile the ebpf programs
     baseObj := filepath.Join(tmp, "base.o")
-    compileBPF(ctx, filePath, baseObj, n, 0)
+    compileBPF(ctx, filePath, baseObj, n)
 
     // load the collection spec
     spec, err := ebpf.LoadCollectionSpec(baseObj)
@@ -93,6 +93,7 @@ func main() {
     srhMap := base.Maps["srh_table"]
     linkMap := base.Maps["link_index_table"]
     macMap := base.Maps["mac_addr_table"]
+    laneMap := base.Maps["lane_table"]
 
     // per CPU / per target maps
     clockMap := base.Maps["clock_map"]
@@ -106,8 +107,6 @@ func main() {
         log.Fatal("expected per CPU BPF maps are missing")
     }
 
-    fmt.Println("Fetched all maps")
-
     // All maps are populated before attaching any program.
     zeroValue := make([]byte, cachedValueSize)
     for i := 0; i < n; i++ {
@@ -116,13 +115,11 @@ func main() {
         }
     }
 
-    log.Printf("MacIndexMap %s\n", macIndexMap)
+    log.Printf("\nMacIndexMap %s\n", macIndexMappings)
 
 
     // Link-index keys 0..n-1 point to the toVNF interfaces.
-    i := 0
-    for _, iface := range macIndexMap {
-        log.Printf("iface: \n", iface.LinkIndex);
+    for i, iface := range macIndexMappings {
         // inIfaces..., OutIfaces..., DispatchVeth, RoutingBridge
         // put LinkIndex in correct spot in LinIndex
         if err := linkMap.Put(uint32(i), uint32(iface.LinkIndex)); err != nil {
@@ -132,7 +129,12 @@ func main() {
         if err := macMap.Put(uint32(i), paddedMAC(iface.Mac)); err != nil {
             log.Fatal("populate lane MAC: ", err)
         }
-        i++
+        n_lanes := len(macIndexMappings)/2 - 1
+        if(i >= n_lanes && i < 2*n_lanes){ // indeces n -> 2n-1 are outgoing interfaces
+            err := laneMap.Put(uint32(iface.LinkIndex), uint32(i - n_lanes)); if err != nil {
+                log.Fatal("populating lane map (link_index of return iface -> lane): ", err)
+            }
+        }
     }
 
     // init clock map
@@ -148,7 +150,7 @@ func main() {
         }
     }
 
-    fmt.Println("Initialized all map values")
+    fmt.Println("Initialized all map values\n")
 
 	/*
     * Attach decap to dispatcher
@@ -165,7 +167,8 @@ func main() {
             _ = l.Close()
         }
     }()
-    decapIndex := macIndexMap[conf.DispatchVeth].LinkIndex
+
+    decapIndex := macIndexMappings[2*n].LinkIndex
     decapLink, err := link.AttachXDP(link.XDPOptions{
         Program:   decapProg,
         Interface: int(decapIndex),
@@ -175,13 +178,7 @@ func main() {
     }
     links = append(links, decapLink)
 
-    fmt.Println("Succesfully attached prog to dispatch interface")
-
-/*     replacements := map[string]*ebpf.Map{
-        "srh_table":       srhMap,
-        "link_index_table": linkMap,
-        "mac_addr_table":  macMap,
-    }
+    fmt.Println("Succesfully attached prog to dispatch interface\n")
 
     var encapCollections []*ebpf.Collection
     defer func() {
@@ -189,62 +186,32 @@ func main() {
             c.Close()
         }
     }()
-    for i, iface := range fromVNF {
-        obj := filepath.Join(tmp, fmt.Sprintf("encap-%d.o", i))
+    
+    for j, iface := range macIndexMappings {
+        if(j >= n && j < 2*n){
+            prog := base.Programs["encap"]
+            if prog == nil {
+                log.Fatal("encap program missing")
+            }
 
-        // compile program again, passing in the index of each fromVNF interface (nf(i/2)) for correct SRH lookup
-        compileBPF(ctx, filePath, obj, n, i)
+            l, err := link.AttachXDP(link.XDPOptions{
+                Program:   prog,
+                Interface: int(iface.LinkIndex),
+            })
 
-        encapSpec, err := ebpf.LoadCollectionSpec(obj)
-        if err != nil {
-            log.Fatalf("load encap spec %d: %v", i, err)
+            var ve *ebpf.VerifierError
+            if errors.As(err, &ve) {
+                fmt.Printf("Verifier log (%d lines):\n", len(ve.Log))
+                fmt.Println(strings.Join(ve.Log, "\n"))
+            } else {
+                if err != nil {
+                    log.Fatalf("attach encap to %d: %v", iface.LinkIndex, err)
+                }
+            }
+            fmt.Printf("Succesfully attached prog to fromVNF interface %d\n", j)
+            links = append(links, l)
         }
-
-        // instantiate collection with newly compiled program referencing map objects created earlier
-        coll, err := ebpf.NewCollectionWithOptions(
-            encapSpec,
-            ebpf.CollectionOptions{
-                MapReplacements: replacements,
-                Programs: ebpf.ProgramOptions{
-                    LogLevel: ebpf.LogLevelInstruction |
-                        ebpf.LogLevelBranch |
-                        ebpf.LogLevelStats,
-                },
-            },
-        )
-        if err != nil {
-            log.Fatalf("load encap collection %d: %v", i, err)
-        }
-        // store for later cleanup
-        encapCollections = append(encapCollections, coll)
-
-        prog := coll.Programs["encap"]
-        if prog == nil {
-            log.Fatalf("encap program missing for slot %d", i)
-        }
-
-        l, err := link.AttachXDP(link.XDPOptions{
-            Program:   prog,
-            Interface: iface.Index,
-        })
-        if err != nil {
-            log.Fatalf("attach encap to %s: %v", iface.Name, err)
-        }
-        var ve *ebpf.VerifierError
-        if errors.As(err, &ve) {
-            fmt.Printf("Verifier log (%d lines):\n", len(ve.Log))
-            fmt.Println(strings.Join(ve.Log, "\n"))
-        } else {
-            log.Printf("No load err")
-        }
-
-        links = append(links, l)
-
-        fmt.Printf(
-            "encap slot %d attached to %s (ifindex %d)\n",
-            i, iface.Name, iface.Index,
-        )
-    } */
+    }
 
     fmt.Printf(
         "decap attached to ifaceIndex %d; shared maps initialized for %d lanes\n",
@@ -269,7 +236,6 @@ func compileBPF(
     source string,
     output string,
     n int,
-    ifaceIndex int,
 ) {
     archInclude, targetArch := targetConfig()
 
@@ -279,7 +245,6 @@ func compileBPF(
         "-target", "bpf",
         "-D" + targetArch,
         "-DN=" + strconv.Itoa(n),
-        "-DSLOT=" + strconv.Itoa(ifaceIndex),
         "-I" + archInclude,
         "-c", source,
         "-o", output,
