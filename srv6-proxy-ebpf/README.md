@@ -7,7 +7,7 @@ Three XDP programs are used to classify, decapsulate and re-encapsulate SRv6 tra
 To test the proxy, build and `cmd/main.go`. This will set up a routing bridge, several veth-interface pairs cosplaying as legacy VNFs, and a veth pair connecting a dispatcher to the routing bridge (one peer is enslaved to the bridge).
 Note that when using veths, XDP might not be advertised/enabled, which would lead to `xdp_redirect` errors. To make a veth-peer (e.g. the dispatcher veth-peer) accept XDP redirects, one can enable `gro` on the other veth-peer. 
 
-> Enabling gro creates a ring buffer and NAPI instance, into which the XDP redirect buffer be written/consumed by.
+> Enabling gro creates a ring buffer and NAPI instance, into which the XDP redirect buffer can be written and consumed by.
 
 The main program loads the eBPF collections and attaches them to the correct interfaces.
 It also populates maps with the correct information. For testing/development the coupling of interfaces is decided from the order in the declaration.
@@ -17,7 +17,7 @@ It also populates maps with the correct information. For testing/development the
 To see the proxy in action, listen with `tcpdump` on the veth peer attached to the bridge and send SRv6 packets using scapy.
 ```
 p = Ether()/IPv6(src="2001:db8:1::1", dst="2001:db8:2::1")/IPv6ExtHdrSegmentRouting(addresses=["2001:db8:3::1","2001:db8:2::1"], segleft=1, lastentry=1)/IPv6(src="fd00::1", dst="fd00::2")/ICMPv6EchoRequest()
-sendp(p, iface="eth0")
+sendp(p, iface="routing-br-port")
 ```
 
 ### Troubleshooting
