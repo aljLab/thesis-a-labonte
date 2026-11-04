@@ -38,7 +38,8 @@ def benchmark(
     srv6 = False,
     log_string = "",
     inner_v4 = False,
-    first_hop_mac = ""
+    first_hop_mac = "",
+    test = False
     ):
     ''' Benchmark a proxy solution by sending packets through it using scapy.
         Args:   
@@ -49,6 +50,7 @@ def benchmark(
             log_string (str): string to append to the stored results file to differentiate test conditions unknown to the script.
             inner_v4 (bool): flag indicating whether or not to use IPv4 for the inner packet (default: IPv6)
             first_hop_mac (string): The mac adress of the first hop to construct correct ethernet frames.
+            test (bool): Flag indicating whether or not to persist run data (if --test=true nothing is stored, default: false).
     '''
     if not send_iface:
         print("sending interface is required. Usage: uv run test.py benchmark --send-iface 'eth0'")
@@ -63,7 +65,8 @@ def benchmark(
 
     report_results(results)
 
-    store_results(results, n, srv6, log_string)
+    if not test:
+        store_results(results, n, srv6, log_string)
 
     print(f"Successfully benchmarked with {n} packets ({send_iface} --> {receive_iface}, srv6: {srv6})")
 

@@ -182,7 +182,6 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 					}
 				}
 			}
-
 		}
 		
 		// WRITE DECAPSULATED PACKETS BACK TO TUN DEVICE
