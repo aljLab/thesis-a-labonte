@@ -20,11 +20,16 @@ INTER_PACKET_TIMEOUT = 0.01
 CAPTURE_STARTUP_TIMEOUT = 0.5
 RECEIVE_TIMEOUT = 1
 
-BOGUS_MAC = "02:00:00:00:00:2"
+BOGUS_MAC = "02:00:00:00:00:02"
 SEGMENT_LIST = ["2001:db8:3::1","2001:db8:2::1"]
 
 SRC_MAC = None
 DST_MAC = None
+
+lock = threading.Lock()
+received = threading.Event()
+pending = {}
+results = []
 
 @app.command
 def benchmark(
@@ -49,23 +54,18 @@ def benchmark(
     if not receive_iface:
         receive_iface = send_iface
     
-    pending = {}
-    results = []
-    
-    run_bench(n, send_iface, receive_iface, srv6, pending, results)
+    run_bench(n, send_iface, receive_iface, srv6)
 
-    store_results(results, n, srv6, log_string)
+    store_results(n, srv6, log_string)
 
-    report_results(results)
+    report_results()
 
-    printf(f"Successfully benchmarked with {n} packets ({send_iface} --> {receive_iface}, srv6: {srv6})")
+    print(f"Successfully benchmarked with {n} packets ({send_iface} --> {receive_iface}, srv6: {srv6})")
 
 
-def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, pending:any, results:any):
-    lock = threading.Lock()
-    received = threading.Event()
+def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool):
 
-    filter = f""
+    filter = "inbound and udp and dst port 12346"
 
     sniffer = AsyncSniffer(
         iface=receive_iface,
@@ -73,7 +73,6 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, pending:any, 
         store=False,
         filter=filter
     )
-
 
     SRC_MAC = netifaces.ifaddresses(send_iface)[netifaces.AF_LINK][0]["addr"]
     DST_MAC = netifaces.ifaddresses(receive_iface)[netifaces.AF_LINK][0]["addr"]
@@ -113,25 +112,23 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, pending:any, 
             time.sleep(INTER_PACKET_TIMEOUT)
     finally:
         time.sleep(RECEIVE_TIMEOUT)
-        sniffer.stop()
+        if sniffer.running:
+            sniffer.stop()
 
 
 def packet_received(pkt):
     if not pkt.haslayer(Ether):
-        print("Received malformed packet, aborting.")
         return
     
-    if pkt.Ether.dst is not DST_MAC:
-        print("Received packet not addressed correctly, aborting.")
+    if pkt[Ether].dst != DST_MAC:
         return
     
     if not pkt.haslayer(Raw):
-        print("No sequence number received, aborting.")
         return
     
     seq = int.from_bytes(pkt[Raw].load[:8], "little")
 
-    rx = time.perf_counter_ns()
+    rx = pkt.time
 
     with lock:
         if seq in pending:
@@ -141,7 +138,7 @@ def packet_received(pkt):
             received.set()
 
 
-def store_results(results:any, n, srv6, log_string):
+def store_results(n, srv6, log_string):
     if not results:
         print("No results to store.")
         return
@@ -154,7 +151,7 @@ def store_results(results:any, n, srv6, log_string):
         writer.writerow(results)
 
 
-def report_results(results:any):
+def report_results():
     if not results:
         print("No results to report.")
         return
