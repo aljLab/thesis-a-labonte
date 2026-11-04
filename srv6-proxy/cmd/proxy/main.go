@@ -4,7 +4,6 @@ package main
 
 import (
 	"bytes"
-	"flag"
 	"fmt"
 	"log"
 	"sync"
@@ -12,6 +11,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 
 	"github.com/aljLab/thesis-a-labonte/srv6-proxy/setup"
+	"github.com/vishvananda/netlink"
 )
 
 type SRv6Header struct {
@@ -55,12 +55,6 @@ const (
 )
 
 func main() {
-	devel := flag.Bool("development", false, "Development toggle: determines whether or not to create infrastructure when starting the proxy.")
-
-	flag.Parse()
-	fmt.Printf("devel flag set to %t", *devel);
-
-
 	// Create TUN devices
 	tun0dev, err := tun.CreateTUN(tun0, MTU)
 	if err != nil {
@@ -86,28 +80,27 @@ func main() {
 	if err != nil {
 		log.Fatalf("get tun1 name: %v", err)
 	}
+
+	tun0, err := netlink.LinkByName(tun0name); if err != nil {
+		log.Fatalf("get tun0 link: %v", err)
+	}
+	tun1, err := netlink.LinkByName(tun1name); if err != nil {
+		log.Fatalf("get tun1 link: %v", err)
+	}
+
+	err = netlink.LinkSetUp(tun0); if err != nil {
+		log.Fatalf("setting tun0 up: %v", err)
+	}
+	err = netlink.LinkSetUp(tun1); if err != nil {
+		log.Fatalf("setting tun1 up: %v", err)
+	}
 	
-	// Set up all interfaces tun0, tun1, decap4, for devel: veth-pair
-	err = setup.SetupLinks(tun0name, tun1name, *devel); if err != nil {
-		fmt.Printf("Error when setting up links: %s", err)
+	err = setup.Setup(); if err != nil {
+		log.Printf("Could not set up network: %v. Tearing down again", err)
+		setup.TearDown()
+		return
 	}
-
-	if *devel {
-		// ensure the system allows srv6 and vrf
-		err = setup.ConfigureSysctls(tun0name, tun1name); if err != nil {
-			fmt.Printf("Error when configuring sysctl: %s", err)
-		}
-
-		// add routes for development:
-		// 10.0.10.0/24 encap seg6 mode encap segs 2 [ fd00:2 fd00:3 ] dev tun0
-		// table 200: default dev veth-in
-		// table 201: default dev tun1
-		// fd::03 encap seg6local action END.DT4 vrftable main dev decap4 table 202
-		setup.SetupRoutesAndRules(tun0name, tun1name)
-		err = setup.SetupRoutesAndRules(tun0name, tun1name); if err != nil {
-			fmt.Printf("Error when setting up routes and rules: %s", err)
-		}
-	}
+	defer setup.TearDown()
 
 	cache := &SRHCache{}
 
@@ -251,7 +244,7 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 
 			needsEncap := true
 			version := packet[0] >> 4
-			log.Printf("<== %s: %d bytes, IPv%d", worker.ifaceName, len(packet), version,)
+			// log.Printf("<== %s: %d bytes, IPv%d", worker.ifaceName, len(packet), version,)
 
 			if version == 6 {
 				// filter NTPv4 and others?
@@ -286,7 +279,6 @@ func (worker *SRv6ProxyWorker) encapTraffic(){
 }
 
 func (w *SRv6ProxyWorker) processSRv6Header(packet []byte) (byte, error) {
-	// TODO: add range sanity check to avoid panicking on index-oo-range
 	start := packet[:24]
 	_ = packet[24:40]
 	innerNextHeader := packet[40:41]

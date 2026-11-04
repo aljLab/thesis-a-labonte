@@ -1,7 +1,7 @@
 //go:build linux
 package setup
 
-import (
+/* import (
 	"errors"
 	"fmt"
 	"net"
@@ -270,7 +270,7 @@ func ConfigureSysctls(Tun0, Tun1 string) error {
 
 	ip route replace default via 10.30.0.1/30 dev veth-in
 	*/
-
+/*
 
 	ifaces := []string{Tun0, Tun1, "veth-in", "veth-out"}
 
@@ -624,6 +624,7 @@ TODO
 		return err
 	}
  */
+ /*
 	if err := ensureRoute(&netlink.Route{
 		LinkIndex: fromVNF.Attrs().Index,
 		Gw:        net.IPv4(10, 40, 0, 1),
@@ -689,27 +690,4 @@ TODO
 
 	return nil
 }
-
-func main() {
-	/* if os.Geteuid() != 0 {
-		fmt.Fprintln(os.Stderr, "Run as root; CAP_NET_ADMIN is required.")
-		os.Exit(1)
-	}
-
-	if err := setupLinks(); err != nil {
-		fmt.Fprintln(os.Stderr, "link setup:", err)
-		os.Exit(1)
-	}
-
-	if err := configureSysctls(); err != nil {
-		fmt.Fprintln(os.Stderr, "sysctl setup:", err)
-		os.Exit(1)
-	}
-
-	if err := setupRoutesAndRules(); err != nil {
-		fmt.Fprintln(os.Stderr, "route/rule setup:", err)
-		os.Exit(1)
-	}
  */
-	fmt.Println("SRv6 proxy topology configured.")
-}
