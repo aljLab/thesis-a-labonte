@@ -111,11 +111,6 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, pending:any, 
                     Raw(load=payload)
                 )
             
-            tx = time.perf_counter_ns()
-
-            with lock:
-                pending[seq] = tx
-            
             sendp(pkt, iface=send_iface, verbose=False)
 
             time.sleep(INTER_PACKET_TIMEOUT)
@@ -141,7 +136,7 @@ def packet_received(pkt, dst_mac, pending, results, lock):
     seq = int.from_bytes(pkt[Raw].load[:8], "little")
 
     rx = pkt.time
-    print("tx inbound: ", rx)
+    print("rx inbound: ", rx)
 
     with lock:
         if seq in pending:
@@ -171,12 +166,12 @@ def store_results(results, n, srv6, log_string):
         return
     
     kind = "proxy" if srv6 else "base"
-    t = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H:%M:%S")
+    t = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
     infix = f"{log_string}_" if log_string != "" else ""
     file_path = f"{kind}_{infix}{n}_{t}.csv"
     with open(file_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow("rtt_ns")
+        writer.writerow(["rtt_ns"])
         writer.writerows([r] for r in results)
 
 
