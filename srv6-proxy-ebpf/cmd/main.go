@@ -38,6 +38,7 @@ func main() {
     macIndexMappings, err := setup.Setup(&conf); if err != nil {
         log.Fatalf("Could not setup networking: %s", err)
     }
+    defer setup.CleanUpNetworkingSetup(&conf)
 
     fmt.Printf("Set Up Networking\n")
 
@@ -224,8 +225,7 @@ func main() {
         "decap attached to ifaceIndex %d; shared maps initialized for %d lanes\n",
         decapIndex, n,
     )
-    defer setup.CleanUpNetworkingSetup(&conf)
-    
+
     // TODO: consider pinning here (storing the file descriptor to keep the objects from being gc'ed)
     select {}
 }

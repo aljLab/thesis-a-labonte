@@ -100,7 +100,7 @@ func ensureVethPair() error {
 			VethIn, VethOut,
 		)
 	}
-
+	
 	if err := netlink.LinkAdd(&netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{Name: VethIn},
 		PeerName:  VethOut,

@@ -55,8 +55,9 @@ const (
 )
 
 func main() {
-	devel := *flag.Bool("development", false, "Development toggle: determines whether or not to create infrastructure when starting the proxy.")
+	devel := flag.Bool("development", false, "Development toggle: determines whether or not to create infrastructure when starting the proxy.")
 
+	fmt.Printf("devel flag set to %t", *devel);
 	flag.Parse()
 
 
@@ -87,9 +88,9 @@ func main() {
 	}
 	
 	// Set up all interfaces tun0, tun1, decap4, for devel: veth-pair
-	setup.SetupLinks(tun0name, tun1name, devel)
+	setup.SetupLinks(tun0name, tun1name, *devel)
 
-	if devel {
+	if *devel {
 		// ensure the system allows srv6 and vrf
 		setup.ConfigureSysctls(tun0name, tun1name)
 
