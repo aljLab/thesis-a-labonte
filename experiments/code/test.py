@@ -11,7 +11,7 @@ import netifaces
 import statistics
 from cyclopts import App
 
-from scapy.all import Ether, Raw, IPv6, IPv6ExtHdrSegmentRouting, Udp, AsyncSniffer, sendp
+from scapy.all import Ether, Raw, IPv6, IPv6ExtHdrSegmentRouting, UDP, AsyncSniffer, sendp
 
 
 app = App()
@@ -92,18 +92,18 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, pending:any, 
                     IPv6(src="2001:db8:1::1", dst="2001:db8:2::1") / 
                     IPv6ExtHdrSegmentRouting(addresses=SEGMENT_LIST, segleft=len(SEGMENT_LIST)-1, lastentry=len(SEGMENT_LIST)-1) / 
                     IPv6(src="fd00::1", dst="fd00::2") / 
-                    Udp(sport=12345, dport=12346) / 
+                    UDP(sport=12345, dport=12346) / 
                     Raw(load=payload)
                 )
             else:
                 pkt = (
                     Ether(src=SRC_MAC, dst=DST_MAC) /
                     IPv6(src="fd00::1", dst="fd00::2") /
-                    Udp(sport=12345, dport=12346) /
+                    UDP(sport=12345, dport=12346) /
                     Raw(load=payload)
                 )
             
-            tx = time.perf_couter_ns()
+            tx = time.perf_counter_ns()
 
             with lock:
                 pending[seq] = tx
