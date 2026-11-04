@@ -384,8 +384,6 @@ func ensureSendReceiveVeths(vrf netlink.Link, bridge netlink.Link) error {
 		return fmt.Errorf("enslaving out link to bridge %s: %w", recvPeer, err)
 	}
 
-
-
 	return nil
 
 }
@@ -459,6 +457,10 @@ func SetupLinks(Tun0, Tun1 string, devel bool) error {
 		}
 
 		bridge, err := netlink.LinkByName("routing-br"); if err != nil {
+			return err
+		}
+
+		err = netlink.LinkSetUp(bridge); if err != nil {
 			return err
 		}
 

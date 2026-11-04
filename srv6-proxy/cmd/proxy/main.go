@@ -88,11 +88,15 @@ func main() {
 	}
 	
 	// Set up all interfaces tun0, tun1, decap4, for devel: veth-pair
-	setup.SetupLinks(tun0name, tun1name, *devel)
+	err = setup.SetupLinks(tun0name, tun1name, *devel); if err != nil {
+		fmt.Printf("Error when setting up links: %s", err)
+	}
 
 	if *devel {
 		// ensure the system allows srv6 and vrf
-		setup.ConfigureSysctls(tun0name, tun1name)
+		err = setup.ConfigureSysctls(tun0name, tun1name); if err != nil {
+			fmt.Printf("Error when configuring sysctl: %s", err)
+		}
 
 		// add routes for development:
 		// 10.0.10.0/24 encap seg6 mode encap segs 2 [ fd00:2 fd00:3 ] dev tun0
@@ -100,6 +104,9 @@ func main() {
 		// table 201: default dev tun1
 		// fd::03 encap seg6local action END.DT4 vrftable main dev decap4 table 202
 		setup.SetupRoutesAndRules(tun0name, tun1name)
+		err = setup.SetupRoutesAndRules(tun0name, tun1name); if err != nil {
+			fmt.Printf("Error when setting up routes and rules: %s", err)
+		}
 	}
 
 	cache := &SRHCache{}
