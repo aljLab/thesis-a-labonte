@@ -69,18 +69,25 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, pending:any, 
     src_mac = netifaces.ifaddresses(send_iface)[netifaces.AF_LINK][0]["addr"]
     dst_mac = netifaces.ifaddresses(receive_iface)[netifaces.AF_LINK][0]["addr"]
 
-    filter = "inbound"
+    send_handler = partial(packet_outbound, pending=pending, lock=lock)
+    recv_handler = partial(packet_received, dst_mac=dst_mac.lower(), pending=pending, results=results, lock=lock)
 
-    handler = partial(packet_received, dst_mac=dst_mac.lower(), pending=pending, results=results, lock=lock)
-
-    sniffer = AsyncSniffer(
-        iface=receive_iface,
-        prn=handler,
+    send_sniffer = AsyncSniffer(
+        iface=send_iface,
+        prn=send_handler,
         store=False,
-        filter=filter
+        filter="outbound"
     )
 
-    sniffer.start()
+    return_sniffer = AsyncSniffer(
+        iface=receive_iface,
+        prn=recv_handler,
+        store=False,
+        filter="inbound"
+    )
+
+    send_sniffer.start()
+    return_sniffer.start()
     time.sleep(CAPTURE_STARTUP_TIMEOUT)
 
     try:
@@ -115,16 +122,18 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, pending:any, 
             time.sleep(INTER_PACKET_TIMEOUT)
     finally:
         time.sleep(RECEIVE_TIMEOUT)
-        if sniffer.running:
-            sniffer.stop()
+        if send_sniffer.running:
+            send_sniffer.stop()
+        if return_sniffer.running:
+            return_sniffer.stop()
 
 
 def packet_received(pkt, dst_mac, pending, results, lock):
-    print(pkt.summary())
     if not pkt.haslayer(Ether):
         return
     
     #if pkt[Ether].dst.lower() != dst_mac:
+    #    print("Mac mismatch in inbound")
     #    return
     
     if not pkt.haslayer(Raw):
@@ -138,7 +147,21 @@ def packet_received(pkt, dst_mac, pending, results, lock):
         if seq in pending:
             tx = pending.pop(seq)
             results.append(rx - tx)
-            received.set()
+            # received.set()
+
+
+def packet_outbound(pkt, pending, lock):
+    tx = pkt.time
+    if not pkt.haslayer(Ether):
+        return
+    
+    if not pkt.haslayer(Raw):
+        return
+    
+    seq = int.from_bytes(pkt[Raw].load[:8], "little")
+
+    with lock:
+        pending[seq] = tx
 
 
 def store_results(results, n, srv6, log_string):
@@ -148,10 +171,11 @@ def store_results(results, n, srv6, log_string):
     
     kind = "proxy" if srv6 else "base"
     t = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H:%M:%S")
-    file_path = f"results/{kind}_{f"{log_string}_" if log_string != "" else ""}{n}_{t}.csv"
+    file_path = f"{kind}_{f"{log_string}_" if log_string != "" else ""}{n}_{t}.csv"
     with open(file_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(results)
+        writer.writerow("rtt_ns")
+        writer.writerows([r] for r in results)
 
 
 def report_results(results):
