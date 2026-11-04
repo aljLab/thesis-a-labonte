@@ -165,18 +165,10 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 				continue
 			}
 
-			// log.Printf("Read packet with length: %d", len(packet))
-
 			version := packet[0] >> 4
-			/* log.Printf(
-				"==> %s: %d bytes, IPv%d", worker.ifaceName, len(packet), version,
-			) */
 
 			if version == 6 {
 				nextHeader := packet[6]
-				if nextHeader == 43 {
-					log.Printf("NextHeader: %d", nextHeader)
-				}
 
 				// decap SRv6 SRH and cache
 				if nextHeader == 43 {
