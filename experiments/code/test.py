@@ -3,14 +3,15 @@
 #   - n -> packet count
 #   - send-iface, receive-iface (if omitted received on the same interface -> matching dst mac addr)
 #   - srv6 (default: false) -> send SRv6 traffic out of send-iface
-import time, datetime, timezone
+import time
+from datetime import datetime, timezone
 import threading
 import csv
 import netifaces
 import statistics
 from cyclopts import App
 
-from scapy.all import Ether, Raw, AsyncSniffer, sendp
+from scapy.all import Ether, Raw, IPv6, IPv6ExtHdrSegmentRouting, Udp, AsyncSniffer, sendp
 
 
 app = App()
@@ -22,8 +23,8 @@ RECEIVE_TIMEOUT = 1
 BOGUS_MAC = "02:00:00:00:00:2"
 SEGMENT_LIST = ["2001:db8:3::1","2001:db8:2::1"]
 
-SRC_MAC = null
-DST_MAC = null
+SRC_MAC = None
+DST_MAC = None
 
 @app.command
 def benchmark(
@@ -61,7 +62,7 @@ def benchmark(
 
 
 def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, pending:any, results:any):
-    lock = threading.lock()
+    lock = threading.Lock()
     received = threading.Event()
 
     filter = f""
@@ -86,20 +87,20 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, pending:any, 
 
             if srv6:
                 # assuming that send_iface == recv_iface for proxy testing
-                pkt(
-                    Ether(src=BOGUS_MAC, dst=DST_MAC)
-                    /IPv6(src="2001:db8:1::1", dst="2001:db8:2::1")
-                    /IPv6ExtHdrSegmentRouting(addresses=SEGMENT_LIST, segleft=len(SEGMENT_LIST)-1, lastentry=len(SEGMENT_LIST)-1)
-                    /IPv6(src="fd00::1", dst="fd00::2")
-                    /Udp(sport=12345, dport=12346)
-                    /Raw(load=payload)
+                pkt = (
+                    Ether(src=BOGUS_MAC, dst=DST_MAC) / 
+                    IPv6(src="2001:db8:1::1", dst="2001:db8:2::1") / 
+                    IPv6ExtHdrSegmentRouting(addresses=SEGMENT_LIST, segleft=len(SEGMENT_LIST)-1, lastentry=len(SEGMENT_LIST)-1) / 
+                    IPv6(src="fd00::1", dst="fd00::2") / 
+                    Udp(sport=12345, dport=12346) / 
+                    Raw(load=payload)
                 )
             else:
-                pkt(
-                    Ether(src=SRC_MAC, dst=DST_MAC)
-                    /IPv6(src="fd00::1", dst="fd00::2")
-                    /Udp(sport=12345, dport=12346)
-                    /Raw(load=payload)
+                pkt = (
+                    Ether(src=SRC_MAC, dst=DST_MAC) /
+                    IPv6(src="fd00::1", dst="fd00::2") /
+                    Udp(sport=12345, dport=12346) /
+                    Raw(load=payload)
                 )
             
             tx = time.perf_couter_ns()
@@ -147,7 +148,7 @@ def store_results(results:any, n, srv6, log_string):
     
     kind = "proxy" if srv6 else "base"
     t = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H:%M:%S")
-    file_path = f"results/{kind}_{f"{log_string}_" if log_string != ""}{n}_{t}.csv"
+    file_path = f"results/{kind}_{f"{log_string}_" if log_string != "" else ""}{n}_{t}.csv"
     with open(file_path, "w", newline="") as f:
         writer = csv.Writer(f)
         writer.writerow(results)
