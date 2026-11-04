@@ -24,9 +24,6 @@ RECEIVE_TIMEOUT = 1
 BOGUS_MAC = "02:00:00:00:00:02"
 SEGMENT_LIST = ["2001:db8:3::1","2001:db8:2::1"]
 
-SRC_MAC = None
-DST_MAC = None
-
 lock = threading.Lock()
 received = threading.Event()
 
@@ -67,12 +64,12 @@ def benchmark(
 
 def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, pending:any, results:any):
 
-    SRC_MAC = netifaces.ifaddresses(send_iface)[netifaces.AF_LINK][0]["addr"]
-    DST_MAC = netifaces.ifaddresses(receive_iface)[netifaces.AF_LINK][0]["addr"]
+    src_mac = netifaces.ifaddresses(send_iface)[netifaces.AF_LINK][0]["addr"]
+    dst_mac = netifaces.ifaddresses(receive_iface)[netifaces.AF_LINK][0]["addr"]
 
-    filter = "inbound and udp and dst port 12346"
+    filter = "inbound"
 
-    handler = partial(packet_received, dst_mac=DST_MAC.lower(), pending=pending, results=results, lock=lock)
+    handler = partial(packet_received, dst_mac=dst_mac.lower(), pending=pending, results=results, lock=lock)
 
     sniffer = AsyncSniffer(
         iface=receive_iface,
@@ -91,7 +88,7 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, pending:any, 
             if srv6:
                 # assuming that send_iface == recv_iface for proxy testing
                 pkt = (
-                    Ether(src=BOGUS_MAC, dst=DST_MAC) / 
+                    Ether(src=BOGUS_MAC.lower(), dst=dst_mac) / 
                     IPv6(src="2001:db8:1::1", dst="2001:db8:2::1") / 
                     IPv6ExtHdrSegmentRouting(addresses=SEGMENT_LIST, segleft=len(SEGMENT_LIST)-1, lastentry=len(SEGMENT_LIST)-1) / 
                     IPv6(src="fd00::1", dst="fd00::2") / 
@@ -100,7 +97,7 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, pending:any, 
                 )
             else:
                 pkt = (
-                    Ether(src=SRC_MAC, dst=DST_MAC) /
+                    Ether(src=src_mac, dst=dst_mac) /
                     IPv6(src="fd00::1", dst="fd00::2") /
                     UDP(sport=12345, dport=12346) /
                     Raw(load=payload)
@@ -121,11 +118,12 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, pending:any, 
 
 
 def packet_received(pkt, dst_mac, pending, results, lock):
+    print(pkt.summary())
     if not pkt.haslayer(Ether):
         return
     
-    if pkt[Ether].dst != DST_MAC:
-        return
+    #if pkt[Ether].dst.lower() != dst_mac:
+    #    return
     
     if not pkt.haslayer(Raw):
         return
@@ -150,7 +148,7 @@ def store_results(results, n, srv6, log_string):
     t = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H:%M:%S")
     file_path = f"results/{kind}_{f"{log_string}_" if log_string != "" else ""}{n}_{t}.csv"
     with open(file_path, "w", newline="") as f:
-        writer = csv.Writer(f)
+        writer = csv.writer(f)
         writer.writerow(results)
 
 
