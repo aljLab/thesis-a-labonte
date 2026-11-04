@@ -224,6 +224,8 @@ func main() {
         "decap attached to ifaceIndex %d; shared maps initialized for %d lanes\n",
         decapIndex, n,
     )
+    defer setup.CleanUpNetworkingSetup(&conf)
+    
     // TODO: consider pinning here (storing the file descriptor to keep the objects from being gc'ed)
     select {}
 }
@@ -282,3 +284,4 @@ func targetConfig() (includeDir, define string) {
         return "", ""
     }
 }
+

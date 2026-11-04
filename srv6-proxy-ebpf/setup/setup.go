@@ -152,3 +152,23 @@ func Setup(conf *Config) ([]MacIndexMapping, error) {
 
 	return macIndexMappings, nil
 }
+
+func CleanUpNetworkingSetup(conf *Config){
+	ifaces := []string{
+		conf.DispatchVeth,
+		conf.RoutingBridgeName,
+	}
+	ifaces = append(ifaces, conf.InIfaces...)
+	for _, iface := range ifaces {
+		var nf netlink.LinkNotFoundError
+		
+		link, err := netlink.LinkByName(iface)
+		if errors.As(err, &nf) {
+			continue // already gone
+		}
+
+		if err := netlink.LinkDel(link); err != nil {
+			log.Fatalf("delete failed: %v", err)
+		}
+	}
+}
