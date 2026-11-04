@@ -28,6 +28,8 @@ SEGMENT_LIST = ["2001:db8:3::1","2001:db8:2::1"]
 lock = threading.Lock()
 received = threading.Event()
 
+tx_times, rx_times = {}, {}
+
 @app.command
 def benchmark(
     n=10000, 
@@ -50,11 +52,10 @@ def benchmark(
     
     if not receive_iface:
         receive_iface = send_iface
-    
-    pending = {}
-    results = []
 
-    run_bench(n, send_iface, receive_iface, srv6, pending, results)
+    run_bench(n, send_iface, receive_iface, srv6)
+
+    results = [int((rx_times[s] - tx_times[s]) * 1e9) for s in rx_times if s in tx_times]
 
     report_results(results)
 
@@ -63,26 +64,29 @@ def benchmark(
     print(f"Successfully benchmarked with {n} packets ({send_iface} --> {receive_iface}, srv6: {srv6})")
 
 
-def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, pending:any, results:any):
+def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool):
 
     src_mac = netifaces.ifaddresses(send_iface)[netifaces.AF_LINK][0]["addr"]
     dst_mac = netifaces.ifaddresses(receive_iface)[netifaces.AF_LINK][0]["addr"]
 
-    send_handler = partial(packet_outbound, pending=pending, lock=lock)
-    recv_handler = partial(packet_received, dst_mac=dst_mac.lower(), pending=pending, results=results, lock=lock)
+    send_handler = partial(packet_outbound, lock=lock)
+    recv_handler = partial(packet_received, lock=lock)
+
+    send_filter = "outbound and ip6 proto 43" if srv6 else "outbound and ip6 proto 17"
+    recv_filter = "inbound and ip6 proto 43" if srv6 else "inbound and ip6 proto 17"
 
     send_sniffer = AsyncSniffer(
         iface=send_iface,
         prn=send_handler,
         store=False,
-        filter="outbound"
+        filter=send_filter
     )
 
     return_sniffer = AsyncSniffer(
         iface=receive_iface,
         prn=recv_handler,
         store=False,
-        filter="inbound"
+        filter=recv_filter
     )
 
     send_sniffer.start()
@@ -120,39 +124,25 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, pending:any, 
             send_sniffer.stop()
         if return_sniffer.running:
             return_sniffer.stop()
+        print("rx packets: ", len(rx_times))
+        print("tx packets: ", len(tx_times))
 
-
-def packet_received(pkt, dst_mac, pending, results, lock):
-    if not pkt.haslayer(Ether):
-        return
-    
-    if not pkt.haslayer(Raw):
-        return
-    
-    seq = int.from_bytes(pkt[Raw].load[:8], "little")
-
-    rx = pkt.time
-
-    with lock:
-        if seq in pending:
-            tx = pending.pop(seq)
-            rtt_ns = int((rx - tx) * 1e9) 
-            results.append(rx - tx)
-            # received.set()
-
-
-def packet_outbound(pkt, pending, lock):
-    tx = pkt.time
-    if not pkt.haslayer(Ether):
-        return
-    
-    if not pkt.haslayer(Raw):
-        return
+def packet_received(pkt, lock):
+    if Raw not in pkt: return
     
     seq = int.from_bytes(pkt[Raw].load[:8], "little")
 
     with lock:
-        pending[seq] = tx
+        rx_times[seq] = float(pkt.time)
+
+
+def packet_outbound(pkt, lock):
+    if Raw not in pkt: return
+    
+    seq = int.from_bytes(pkt[Raw].load[:8], "little")
+
+    with lock:
+        tx_times[seq] = float(pkt.time)
 
 
 def store_results(results, n, srv6, log_string):

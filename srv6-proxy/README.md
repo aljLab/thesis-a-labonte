@@ -1,4 +1,4 @@
-# SRv6 Proxy for Loom
+# SRv6 Proxy for Loom (User Space Variant)
 
 ![proxy.png](proxy.png)
 
