@@ -321,6 +321,13 @@ func ensureSendReceiveVeths(vrf netlink.Link, bridge netlink.Link) error {
 		return fmt.Errorf("get link %s: %w", sendPeer, err)
 	}
 
+	err = netlink.LinkSetUp(linkIn); if err != nil {
+		return err
+	}
+	err = netlink.LinkSetUp(linkPeer); if err != nil {
+		return err
+	}
+
 	err = netlink.LinkSetMaster(linkIn, bridge); if err != nil {
 		return fmt.Errorf("enslaving link to bridge %s: %w", sendIn, err)
 	}
@@ -442,7 +449,7 @@ func SetupLinks(Tun0, Tun1 string, devel bool) error {
 		}
 
 		br := &netlink.Bridge{
-		LinkAttrs: netlink.LinkAttrs{Name: "routing-bridge"},
+		LinkAttrs: netlink.LinkAttrs{Name: "routing-br"},
 		}
 		if err := netlink.LinkAdd(br); err != nil {
 			return fmt.Errorf("create bridge: %v", err)
@@ -451,7 +458,7 @@ func SetupLinks(Tun0, Tun1 string, devel bool) error {
 			return fmt.Errorf("bridge up: %v", err)
 		}
 
-		bridge, err := netlink.LinkByName("routing-bridge"); if err != nil {
+		bridge, err := netlink.LinkByName("routing-br"); if err != nil {
 			return err
 		}
 
