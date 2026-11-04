@@ -9,6 +9,7 @@ import threading
 import csv
 import netifaces
 import statistics
+import os
 from cyclopts import App
 from functools import partial
 
@@ -55,7 +56,8 @@ def benchmark(
 
     run_bench(n, send_iface, receive_iface, srv6, pending, results)
 
-    store_results(results, n, srv6, log_string)
+    # store_results(results, n, srv6, log_string)
+    print(os.getcwd())
 
     report_results(results)
 
