@@ -56,9 +56,9 @@ def benchmark(
 
     run_bench(n, send_iface, receive_iface, srv6, pending, results)
 
-    store_results(results, n, srv6, log_string)
-
     report_results(results)
+
+    store_results(results, n, srv6, log_string)
 
     print(f"Successfully benchmarked with {n} packets ({send_iface} --> {receive_iface}, srv6: {srv6})")
 
@@ -141,6 +141,7 @@ def packet_received(pkt, dst_mac, pending, results, lock):
     with lock:
         if seq in pending:
             tx = pending.pop(seq)
+            rtt_ns = int((rx - tx) * 1e9) 
             results.append(rx - tx)
             # received.set()
 
@@ -168,7 +169,10 @@ def store_results(results, n, srv6, log_string):
     kind = "proxy" if srv6 else "base"
     t = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
     infix = f"{log_string}_" if log_string != "" else ""
-    file_path = f"{kind}_{infix}{n}_{t}.csv"
+
+    os.makedirs("results", exist_ok=True)
+
+    file_path = f"results/{kind}_{infix}{n}_{t}.csv"
     with open(file_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["rtt_ns"])
