@@ -10,6 +10,7 @@ import csv
 import netifaces
 import statistics
 from cyclopts import App
+from functools import partial
 
 from scapy.all import Ether, Raw, IPv6, IPv6ExtHdrSegmentRouting, UDP, AsyncSniffer, sendp
 
@@ -28,8 +29,6 @@ DST_MAC = None
 
 lock = threading.Lock()
 received = threading.Event()
-pending = {}
-results = []
 
 @app.command
 def benchmark(
@@ -54,28 +53,33 @@ def benchmark(
     if not receive_iface:
         receive_iface = send_iface
     
-    run_bench(n, send_iface, receive_iface, srv6)
+    pending = {}
+    results = []
 
-    store_results(n, srv6, log_string)
+    run_bench(n, send_iface, receive_iface, srv6, pending, results)
 
-    report_results()
+    store_results(results, n, srv6, log_string)
+
+    report_results(results)
 
     print(f"Successfully benchmarked with {n} packets ({send_iface} --> {receive_iface}, srv6: {srv6})")
 
 
-def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool):
-
-    filter = "inbound and udp and dst port 12346"
-
-    sniffer = AsyncSniffer(
-        iface=receive_iface,
-        prn=packet_received,
-        store=False,
-        filter=filter
-    )
+def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, pending:any, results:any):
 
     SRC_MAC = netifaces.ifaddresses(send_iface)[netifaces.AF_LINK][0]["addr"]
     DST_MAC = netifaces.ifaddresses(receive_iface)[netifaces.AF_LINK][0]["addr"]
+
+    filter = "inbound and udp and dst port 12346"
+
+    handler = partial(packet_received, dst_mac=DST_MAC.lower(), pending=pending, results=results, lock=lock)
+
+    sniffer = AsyncSniffer(
+        iface=receive_iface,
+        prn=handler,
+        store=False,
+        filter=filter
+    )
 
     sniffer.start()
     time.sleep(CAPTURE_STARTUP_TIMEOUT)
@@ -116,7 +120,7 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool):
             sniffer.stop()
 
 
-def packet_received(pkt):
+def packet_received(pkt, dst_mac, pending, results, lock):
     if not pkt.haslayer(Ether):
         return
     
@@ -133,12 +137,11 @@ def packet_received(pkt):
     with lock:
         if seq in pending:
             tx = pending.pop(seq)
-            rtt_ns = rx - tx
-            results.append(rtt_ns)
+            results.append(rx - tx)
             received.set()
 
 
-def store_results(n, srv6, log_string):
+def store_results(results, n, srv6, log_string):
     if not results:
         print("No results to store.")
         return
@@ -151,7 +154,7 @@ def store_results(n, srv6, log_string):
         writer.writerow(results)
 
 
-def report_results():
+def report_results(results):
     if not results:
         print("No results to report.")
         return
