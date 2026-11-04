@@ -149,6 +149,9 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 		for i := range bufs {
 			bufs[i] = bufs[i][:cap(bufs[i])]
 		}
+		
+		// reset offset
+		offset = VIRTIO_OFFSET
 
 		n, err := worker.tunDev.Read(bufs, sizes, offset)
 		if err != nil {
@@ -185,8 +188,6 @@ func (worker *SRv6ProxyWorker) decapTraffic() {
 
 						offset = offset + int(totalHeaderBytes) // move offset by the length of outer ipv6 + srh
 					}
-				} else {
-					offset = VIRTIO_OFFSET
 				}
 			}
 

@@ -13,7 +13,7 @@ import os
 from cyclopts import App
 from functools import partial
 
-from scapy.all import Ether, Raw, IPv6, IPv6ExtHdrSegmentRouting, UDP, AsyncSniffer, sendp
+from scapy.all import Ether, Raw, IPv6, IP, IPv6ExtHdrSegmentRouting, UDP, AsyncSniffer, sendp
 
 
 app = App()
@@ -36,7 +36,9 @@ def benchmark(
     send_iface = None,
     receive_iface = None,
     srv6 = False,
-    log_string = ""
+    log_string = "",
+    inner_v4 = False,
+    first_hop_mac = ""
     ):
     ''' Benchmark a proxy solution by sending packets through it using scapy.
         Args:   
@@ -45,6 +47,8 @@ def benchmark(
             receive_iface (str): Name of the interface to listen on for return traffic.
             srv6 (bool): Flag indicating whether or not to use SRv6 packets (might not be sensible for non-SRv6 baseline).
             log_string (str): string to append to the stored results file to differentiate test conditions unknown to the script.
+            inner_v4 (bool): flag indicating whether or not to use IPv4 for the inner packet (default: IPv6)
+            first_hop_mac (string): The mac adress of the first hop to construct correct ethernet frames.
     '''
     if not send_iface:
         print("sending interface is required. Usage: uv run test.py benchmark --send-iface 'eth0'")
@@ -53,7 +57,7 @@ def benchmark(
     if not receive_iface:
         receive_iface = send_iface
 
-    run_bench(n, send_iface, receive_iface, srv6)
+    run_bench(n, send_iface, receive_iface, srv6, inner_v4, first_hop_mac)
 
     results = [int((rx_times[s] - tx_times[s]) * 1e9) for s in rx_times if s in tx_times]
 
@@ -64,10 +68,13 @@ def benchmark(
     print(f"Successfully benchmarked with {n} packets ({send_iface} --> {receive_iface}, srv6: {srv6})")
 
 
-def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool):
+def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool, first_hop_mac:str):
 
     src_mac = netifaces.ifaddresses(send_iface)[netifaces.AF_LINK][0]["addr"]
-    dst_mac = netifaces.ifaddresses(receive_iface)[netifaces.AF_LINK][0]["addr"]
+    if first_hop_mac != "":
+        dst_mac = first_hop_mac
+    else:
+        dst_mac = netifaces.ifaddresses(receive_iface)[netifaces.AF_LINK][0]["addr"]
 
     send_handler = partial(packet_outbound, lock=lock)
     recv_handler = partial(packet_received, lock=lock)
@@ -99,14 +106,24 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool):
 
             if srv6:
                 # assuming that send_iface == recv_iface for proxy testing
-                pkt = (
-                    Ether(src=BOGUS_MAC.lower(), dst=dst_mac) / 
-                    IPv6(src="2001:db8:1::1", dst="2001:db8:2::1") / 
-                    IPv6ExtHdrSegmentRouting(addresses=SEGMENT_LIST, segleft=len(SEGMENT_LIST)-1, lastentry=len(SEGMENT_LIST)-1) / 
-                    IPv6(src="fd00::1", dst="fd00::2") / 
-                    UDP(sport=12345, dport=12346) / 
-                    Raw(load=payload)
-                )
+                if inner_v4:
+                    pkt = (
+                        Ether(src=BOGUS_MAC.lower(), dst=dst_mac) / 
+                        IPv6(src="2001:db8:1::1", dst="2001:db8:2::1") / 
+                        IPv6ExtHdrSegmentRouting(addresses=SEGMENT_LIST, segleft=len(SEGMENT_LIST)-1, lastentry=len(SEGMENT_LIST)-1) / 
+                        IP(src="10.0.0.1", dst="10.0.0.2") / 
+                        UDP(sport=12345, dport=12346) / 
+                        Raw(load=payload)
+                    )
+                else:
+                    pkt = (
+                        Ether(src=BOGUS_MAC.lower(), dst=dst_mac) / 
+                        IPv6(src="2001:db8:1::1", dst="2001:db8:2::1") / 
+                        IPv6ExtHdrSegmentRouting(addresses=SEGMENT_LIST, segleft=len(SEGMENT_LIST)-1, lastentry=len(SEGMENT_LIST)-1) / 
+                        IPv6(src="fd00::1", dst="fd00::2") / 
+                        UDP(sport=12345, dport=12346) / 
+                        Raw(load=payload)
+                    )
             else:
                 pkt = (
                     Ether(src=src_mac, dst=dst_mac) /
