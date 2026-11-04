@@ -126,17 +126,12 @@ def packet_received(pkt, dst_mac, pending, results, lock):
     if not pkt.haslayer(Ether):
         return
     
-    #if pkt[Ether].dst.lower() != dst_mac:
-    #    print("Mac mismatch in inbound")
-    #    return
-    
     if not pkt.haslayer(Raw):
         return
     
     seq = int.from_bytes(pkt[Raw].load[:8], "little")
 
     rx = pkt.time
-    print("rx inbound: ", rx)
 
     with lock:
         if seq in pending:
@@ -148,7 +143,6 @@ def packet_received(pkt, dst_mac, pending, results, lock):
 
 def packet_outbound(pkt, pending, lock):
     tx = pkt.time
-    print("tx outbound: ", tx)
     if not pkt.haslayer(Ether):
         return
     
