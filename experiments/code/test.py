@@ -56,8 +56,7 @@ def benchmark(
 
     run_bench(n, send_iface, receive_iface, srv6, pending, results)
 
-    # store_results(results, n, srv6, log_string)
-    print(os.getcwd())
+    store_results(results, n, srv6, log_string)
 
     report_results(results)
 
@@ -142,6 +141,7 @@ def packet_received(pkt, dst_mac, pending, results, lock):
     seq = int.from_bytes(pkt[Raw].load[:8], "little")
 
     rx = pkt.time
+    print("tx inbound: ", rx)
 
     with lock:
         if seq in pending:
@@ -152,6 +152,7 @@ def packet_received(pkt, dst_mac, pending, results, lock):
 
 def packet_outbound(pkt, pending, lock):
     tx = pkt.time
+    print("tx outbound: ", tx)
     if not pkt.haslayer(Ether):
         return
     
@@ -171,7 +172,8 @@ def store_results(results, n, srv6, log_string):
     
     kind = "proxy" if srv6 else "base"
     t = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H:%M:%S")
-    file_path = f"{kind}_{f"{log_string}_" if log_string != "" else ""}{n}_{t}.csv"
+    infix = f"{log_string}_" if log_string != "" else ""
+    file_path = f"{kind}_{infix}{n}_{t}.csv"
     with open(file_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow("rtt_ns")
@@ -186,10 +188,10 @@ def report_results(results):
     us = [ x / 1000 for x in results]
 
     print("\nResults")
-    print("------------------")
-    print(f"Received:   {len(results)}")
-    print(f"Average:    {statistics.mean(us):.2f}")
-    print("------------------")
+    print("------------------------")
+    print(f"Received:         {len(results)}")
+    print(f"Average(µs):  {statistics.mean(us):.8f}")
+    print("------------------------")
 
 if __name__ == "__main__":
     app()
