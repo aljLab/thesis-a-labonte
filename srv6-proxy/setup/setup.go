@@ -2,6 +2,7 @@
 package setup
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -306,7 +307,7 @@ func ensureSendReceiveVeths(vrf netlink.Link, bridge netlink.Link) error {
 	if err := netlink.LinkAdd(&netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{Name: sendIn},
 		PeerName:  sendPeer,
-	}); err != nil {
+	}); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("create veth pair: %w", err)
 	}
 
@@ -343,12 +344,12 @@ func ensureSendReceiveVeths(vrf netlink.Link, bridge netlink.Link) error {
 	if err := netlink.LinkAdd(&netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{Name: recvIn},
 		PeerName:  recvPeer,
-	}); err != nil {
+	}); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("create veth pair: %w", err)
 	}
 
 	
-	linkOut, err := netlink.LinkByName(recvPeer)
+	linkOut, err := netlink.LinkByName(recvIn)
 	if err != nil {
 		return fmt.Errorf("get link %s: %w", sendIn, err)
 	}
@@ -371,7 +372,7 @@ func ensureSendReceiveVeths(vrf netlink.Link, bridge netlink.Link) error {
 			return fmt.Errorf("parse address %s: %w", cfg.cidr, err)
 		}
 
-		if err := netlink.AddrAdd(cfg.link, addr); err != nil {
+		if err := netlink.AddrAdd(cfg.link, addr); err != nil && !errors.Is(err, unix.EEXIST) {
 			return fmt.Errorf("assign %s to %s: %w", cfg.cidr, cfg.link.Attrs().Name, err)
 		}
 
@@ -390,13 +391,26 @@ func ensureSendReceiveVeths(vrf netlink.Link, bridge netlink.Link) error {
 
 func ensureIngressVRF() error {
 	const table = 1001
-
+	name := "ingress-vrf"
 	vrf := &netlink.Vrf{
-		LinkAttrs: netlink.LinkAttrs{Name: "ingress-vrf"},
+		LinkAttrs: netlink.LinkAttrs{Name: name},
 		Table:     table,
 	}
-	if err := netlink.LinkAdd(vrf); err != nil {
-		return fmt.Errorf("create vrf: %v", err)
+	if err := netlink.LinkAdd(vrf); err != nil && !errors.Is(err, unix.EEXIST) {
+		return fmt.Errorf("create vrf: %w", err)
+	}
+
+	// Fetch the actual link (it may have pre-existed) and validate it.
+	link, err := netlink.LinkByName(name)
+	if err != nil {
+		return fmt.Errorf("lookup vrf: %w", err)
+	}
+	existing, ok := link.(*netlink.Vrf)
+	if !ok {
+		return fmt.Errorf("%s exists but is type %q, not vrf", name, link.Type())
+	}
+	if existing.Table != table {
+		return fmt.Errorf("vrf %s exists with table %d, want %d", name, existing.Table, table)
 	}
 	if err := netlink.LinkSetUp(vrf); err != nil {
 		return fmt.Errorf("vrf up: %v", err)
@@ -449,13 +463,10 @@ func SetupLinks(Tun0, Tun1 string, devel bool) error {
 		br := &netlink.Bridge{
 		LinkAttrs: netlink.LinkAttrs{Name: "routing-br"},
 		}
-		if err := netlink.LinkAdd(br); err != nil {
+		if err := netlink.LinkAdd(br); err != nil && !errors.Is(err, unix.EEXIST){
 			return fmt.Errorf("create bridge: %v", err)
 		}
-		if err := netlink.LinkSetUp(br); err != nil {
-			return fmt.Errorf("bridge up: %v", err)
-		}
-
+		
 		bridge, err := netlink.LinkByName("routing-br"); if err != nil {
 			return err
 		}
