@@ -57,8 +57,8 @@ const (
 func main() {
 	devel := flag.Bool("development", false, "Development toggle: determines whether or not to create infrastructure when starting the proxy.")
 
-	fmt.Printf("devel flag set to %t", *devel);
 	flag.Parse()
+	fmt.Printf("devel flag set to %t", *devel);
 
 
 	// Create TUN devices

@@ -100,7 +100,7 @@ func ensureVethPair() error {
 			VethIn, VethOut,
 		)
 	}
-	
+
 	if err := netlink.LinkAdd(&netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{Name: VethIn},
 		PeerName:  VethOut,
@@ -297,6 +297,133 @@ func ConfigureSysctls(Tun0, Tun1 string) error {
 	return nil
 }
 
+func ensureSendReceiveVeths(vrf netlink.Link, bridge netlink.Link) error {
+
+	// send
+	sendIn := "toVNF0"
+	sendPeer := "toVNF1"
+
+	if err := netlink.LinkAdd(&netlink.Veth{
+		LinkAttrs: netlink.LinkAttrs{Name: sendIn},
+		PeerName:  sendPeer,
+	}); err != nil {
+		return fmt.Errorf("create veth pair: %w", err)
+	}
+
+	// get links by name
+	linkIn, err := netlink.LinkByName(sendIn)
+	if err != nil {
+		return fmt.Errorf("get link %s: %w", sendIn, err)
+	}
+
+	linkPeer, err := netlink.LinkByName(sendPeer)
+	if err != nil {
+		return fmt.Errorf("get link %s: %w", sendPeer, err)
+	}
+
+	err = netlink.LinkSetMaster(linkIn, bridge); if err != nil {
+		return fmt.Errorf("enslaving link to bridge %s: %w", sendIn, err)
+	}
+
+	err = netlink.LinkSetMaster(linkPeer, vrf); if err != nil {
+		return fmt.Errorf("enslaving link to vrf %s: %w", sendPeer, err)
+	}
+
+	// receive
+	recvIn := "fromVNF0"
+	recvPeer := "fromVNF1"
+
+	if err := netlink.LinkAdd(&netlink.Veth{
+		LinkAttrs: netlink.LinkAttrs{Name: recvIn},
+		PeerName:  recvPeer,
+	}); err != nil {
+		return fmt.Errorf("create veth pair: %w", err)
+	}
+
+	
+	linkOut, err := netlink.LinkByName(recvPeer)
+	if err != nil {
+		return fmt.Errorf("get link %s: %w", sendIn, err)
+	}
+	
+	linkOutBridge, err := netlink.LinkByName(recvPeer)
+	if err != nil {
+		return fmt.Errorf("get link %s: %w", sendIn, err)
+	}
+
+	// assign IP addresses in the same subnet
+	for _, cfg := range []struct {
+		link netlink.Link
+		cidr string
+	}{
+		{link: linkOut, cidr: "10.40.0.2/30"},
+		{link: linkOutBridge, cidr: "10.40.0.1/30"},
+	} {
+		addr, err := netlink.ParseAddr(cfg.cidr)
+		if err != nil {
+			return fmt.Errorf("parse address %s: %w", cfg.cidr, err)
+		}
+
+		if err := netlink.AddrAdd(cfg.link, addr); err != nil {
+			return fmt.Errorf("assign %s to %s: %w", cfg.cidr, cfg.link.Attrs().Name, err)
+		}
+
+		if err := netlink.LinkSetUp(cfg.link); err != nil {
+			return fmt.Errorf("bring up %s: %w", cfg.link.Attrs().Name, err)
+		}
+	}
+	
+	err = netlink.LinkSetMaster(linkOutBridge, bridge); if err != nil {
+		return fmt.Errorf("enslaving out link to bridge %s: %w", recvPeer, err)
+	}
+
+
+
+	return nil
+
+}
+
+func ensureIngressVRF() error {
+	const table = 1001
+
+	vrf := &netlink.Vrf{
+		LinkAttrs: netlink.LinkAttrs{Name: "ingress-vrf"},
+		Table:     table,
+	}
+	if err := netlink.LinkAdd(vrf); err != nil {
+		return fmt.Errorf("create vrf: %v", err)
+	}
+	if err := netlink.LinkSetUp(vrf); err != nil {
+		return fmt.Errorf("vrf up: %v", err)
+	}
+
+	// 2. enslave tun0 to the VRF
+	tun, err := netlink.LinkByName("tun0")
+	if err != nil {
+		return fmt.Errorf("lookup tun0: %v", err)
+	}
+	if err := netlink.LinkSetUp(tun); err != nil {
+		return fmt.Errorf("tun0 up: %v", err)
+	}
+	if err := netlink.LinkSetMaster(tun, vrf); err != nil {
+		return fmt.Errorf("set master: %v", err)
+	}
+
+	// 3. IPv6 default route in table 1001 via tun0
+	route := &netlink.Route{
+		LinkIndex: tun.Attrs().Index,
+		Dst: &net.IPNet{
+			IP:   net.IPv6zero,
+			Mask: net.CIDRMask(0, 128),
+		},
+		Table: table,
+	}
+	if err := netlink.RouteReplace(route); err != nil {
+		return fmt.Errorf("add route: %v", err)
+	}
+	return nil
+}
+
 // -----------------------------------------------------------------------------
 // Interface creation
 // -----------------------------------------------------------------------------
@@ -307,6 +434,32 @@ func SetupLinks(Tun0, Tun1 string, devel bool) error {
 
 	if devel {
 		if err := ensureVethPair(); err != nil {
+			return err
+		}
+
+		if err := ensureIngressVRF(); err != nil {
+			return err
+		}
+
+		br := &netlink.Bridge{
+		LinkAttrs: netlink.LinkAttrs{Name: "routing-bridge"},
+		}
+		if err := netlink.LinkAdd(br); err != nil {
+			return fmt.Errorf("create bridge: %v", err)
+		}
+		if err := netlink.LinkSetUp(br); err != nil {
+			return fmt.Errorf("bridge up: %v", err)
+		}
+
+		bridge, err := netlink.LinkByName("routing-bridge"); if err != nil {
+			return err
+		}
+
+		vrf, err := netlink.LinkByName("ingress-vrf"); if err != nil {
+			return err
+		}
+
+		if err := ensureSendReceiveVeths(vrf, bridge); err != nil {
 			return err
 		}
 		// decap4 is the VRF device used by the End.DT4 action.
@@ -352,10 +505,16 @@ func SetupRoutesAndRules(Tun0, Tun1 string) error {
 		return err
 	}
 
-	decap4, err := getLink(Decap4)
+	_, err = getLink(Decap4)
 	if err != nil {
 		return err
 	}
+
+	fromVNF, err := getLink("fromVNF0")
+	if err != nil {
+		return err
+	}
+
 
 	// 1. Main IPv4 table:
 	//
@@ -424,6 +583,7 @@ func SetupRoutesAndRules(Tun0, Tun1 string) error {
 	//
 	// End.DT4 requires VRF-table mode. Setting SEG6_LOCAL_TABLE here
 	// would be incorrect: use SEG6_LOCAL_VRFTABLE and VrfTable.
+	/* 
 	var flags [nl.SEG6_LOCAL_MAX]bool
 	flags[nl.SEG6_LOCAL_ACTION] = true
 	flags[nl.SEG6_LOCAL_VRFTABLE] = true
@@ -433,13 +593,23 @@ func SetupRoutesAndRules(Tun0, Tun1 string) error {
 		VrfTable: MainTable,
 		Flags:    flags,
 	}
-
+TODO
 	if err := ensureRoute(&netlink.Route{
 		LinkIndex: decap4.Attrs().Index,
 		Dst:       mustCIDR(DecapSID + "/128"),
 		Table:     TableTun1,
 		Family:    netlink.FAMILY_V6,
 		Encap:     endDT4,
+	}); err != nil {
+		return err
+	}
+ */
+	if err := ensureRoute(&netlink.Route{
+		LinkIndex: fromVNF.Attrs().Index,
+		Gw:        net.IPv4(10, 40, 0, 1),
+		Dst:       mustCIDR("0.0.0.0/0"),
+		Table:     TableTun1,
+		Family:    netlink.FAMILY_V6,
 	}); err != nil {
 		return err
 	}
