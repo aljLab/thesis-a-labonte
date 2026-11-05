@@ -169,7 +169,7 @@ int compare_seg_lists(struct sfc_t *sfc, struct in6_addr *new_segs, __u8 *equal,
 }
 
 static __always_inline
-int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *clock, __u32 *lane, void *end)
+int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *rx_time, __u32 *lane, void *end)
 {   
     __s32 oldest_lane = -1; // stores the lane to be evicted if new_segs is a new SFC
     __u64 oldest_time = 1ULL << 63; // initialize to max of allowed distance between two packets
@@ -466,7 +466,7 @@ int classify_sfc(struct xdp_md *ctx)
      */
     __u64 rx_time = bpf_jiffies64();
 
-    bpf_printk("Jiffies is currently: %u", jiffies);
+    bpf_printk("Jiffies is currently: %u", rx_time);
     
     if(bpf_xdp_adjust_meta(ctx, -(int)sizeof(struct lane_meta)) < 0)
         return XDP_ABORTED;
