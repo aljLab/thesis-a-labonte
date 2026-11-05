@@ -39,13 +39,13 @@ struct {
     __type(value, struct sfc_t); // age and content information on recently seen
 } sfc_lane_map SEC(".maps");
 
-// one-entry clock map storing a monotonic clock value increasing on each SRv6 packet
+/* // one-entry clock map storing a monotonic clock value increasing on each SRv6 packet
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 1);
     __type(key, __u32); // always 0
     __type(value, __u64); // clock value TODO: add locking
-} clock_map SEC(".maps");
+} clock_map SEC(".maps"); */
 
 // not modified by xdp programs
 struct {
@@ -171,8 +171,6 @@ int compare_seg_lists(struct sfc_t *sfc, struct in6_addr *new_segs, __u8 *equal,
 static __always_inline
 int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *clock, __u32 *lane, void *end)
 {   
-    // (*lane) = 0; // test
-    // return 0;
     __s32 oldest_lane = -1; // stores the lane to be evicted if new_segs is a new SFC
     __u64 oldest_time = 1ULL << 63; // initialize to max of allowed distance between two packets
     struct sfc_t *oldest_sfc = NULL;
@@ -197,7 +195,7 @@ int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *clock, __u32 *lan
             if(update_lane_cache(new_segs, n_seg, sfc, end) < 0)
                 return -1;
             sfc->n_segs = n_seg;
-            sfc->last_seen = *clock;
+            sfc->last_seen = *rx_time;
             *(lane) = i;
             return 0;
         }
@@ -225,7 +223,7 @@ int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *clock, __u32 *lan
 
         if (equal == 0) {
             sfc->n_segs = n_seg;
-            sfc->last_seen = *clock;
+            sfc->last_seen = *rx_time;
 
             *(lane) = i;
             return 0;
@@ -240,7 +238,7 @@ int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *clock, __u32 *lan
     if(update_lane_cache(new_segs, n_seg, oldest_sfc, end) < 0)
         return -1;
 
-    oldest_sfc->last_seen = *clock;
+    oldest_sfc->last_seen = *rx_time;
     oldest_sfc->n_segs = n_seg;
     *(lane) = oldest_lane;
     return 0;
@@ -460,11 +458,15 @@ eBPF PROGRAMS
 SEC("xdp")
 int classify_sfc(struct xdp_md *ctx)
 {   
-    __u32 clock_index = 0;
+    /* __u32 clock_index = 0;
     __u64 *clock = bpf_map_lookup_elem(&clock_map, &clock_index);
 
     if(!clock)
         return XDP_ABORTED;
+     */
+    __u64 rx_time = bpf_jiffies64();
+
+    bpf_printk("Jiffies is currently: %u", jiffies);
     
     if(bpf_xdp_adjust_meta(ctx, -(int)sizeof(struct lane_meta)) < 0)
         return XDP_ABORTED;
@@ -486,9 +488,9 @@ int classify_sfc(struct xdp_md *ctx)
         return XDP_DROP; // maybe pass on? need to ensure that not encaped
     
      __u32 lane = 0;
-    (*clock)++; // ensure clock is always bigger than 0
+    // (*clock)++; // ensure clock is always bigger than 0
 
-    if(assign_lane(p->srh->segments, p->n_segs, clock, &lane, end) < 0)
+    if(assign_lane(p->srh->segments, p->n_segs, &rx_time, &lane, end) < 0)
         return XDP_ABORTED;
     
     struct lane_meta *lane_meta = (struct lane_meta *)meta;
@@ -501,58 +503,39 @@ int classify_sfc(struct xdp_md *ctx)
 SEC("xdp")
 int decap(struct xdp_md *ctx)
 {   
-   /*  __u32 clock_index = 0;
-    __u64 *clock = bpf_map_lookup_elem(&clock_map, &clock_index);
-
-    if(!clock)
-        return XDP_DROP;
-     */
     void *start = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
     void *meta = (void *)(long)ctx->data_meta;
 
-    bpf_printk("reading lane from meta...");
-
     __u32 lane = 0;
     if(read_lane_from_meta(meta, start, &lane) < 0)
         return XDP_ABORTED;
-    
-    bpf_printk("read lane from meta with lane %u", lane);
 
     struct parsed_srh parsed = {};
     struct parsed_srh *p = &parsed;
-    // parse packet
     if(parse_packet(p, start, end) < 0)
         return XDP_DROP;
-    
-    /* if(filter_srv6_traffic(p) < 0)
-        return XDP_PASS; */
-    // update SRH
+
     if(update_srh(p, end) < 0)
         return XDP_DROP;
-    // assign lane
-    /* __u32 lane = 0;
-    (*clock)++; // ensure clock is always bigger than 0
-    if(assign_lane(p->srh->segments, p->n_segs, clock, &lane, end) < 0)
-        return XDP_DROP; */
 
-    // fetch cached header based on lane
     struct cached_outer *cached;
     cached = bpf_map_lookup_elem(&srh_table, &lane);
     if(!cached)
         return XDP_DROP;
-    // update cached header
+
     if(update_cached_header(cached, (char *)p->ip6, &lane, p->outer_len, end) < 0)
         return XDP_DROP;
 
-    // copy eth header infront of inner packet
     if(cp_ethhdr_in_front_of_inner(p))
     // get dst/src mac addresses update eth header h_proto in packet
+
     if(update_eth_hdr(p->eth, end, lane) < 0)
         return XDP_DROP;
-    // adjust head
+
     if(bpf_xdp_adjust_head(ctx, p->outer_len) < 0)
         return XDP_DROP;
+
     // refetch pointers/reparse needed headers
     start = (void *)(long)ctx->data;
     end = (void *)(long)ctx->data_end;

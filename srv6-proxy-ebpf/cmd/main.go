@@ -98,14 +98,14 @@ func main() {
     tailcallMap := base.Maps["progs"]
 
     // per CPU / per target maps
-    clockMap := base.Maps["clock_map"]
+    // clockMap := base.Maps["clock_map"]
     sfcLaneMap := base.Maps["sfc_lane_map"]
 
     if srhMap == nil || linkMap == nil || macMap == nil {
         log.Fatal("expected shared BPF maps are missing")
     }
 
-    if clockMap == nil || sfcLaneMap == nil {
+    if sfcLaneMap == nil {
         log.Fatal("expected per CPU BPF maps are missing")
     }
 
@@ -140,9 +140,9 @@ func main() {
     }
 
     // init clock map
-    if err := clockMap.Put(uint32(0), uint64(0)); err != nil {
+    /* if err := clockMap.Put(uint32(0), uint64(0)); err != nil {
         log.Fatal("populating clock map: ", err)
-    }
+    } */
 
     // init per cpu map
     zeroValue = make([]byte, 2064)
