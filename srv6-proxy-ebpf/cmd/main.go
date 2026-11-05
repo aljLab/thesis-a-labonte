@@ -2,22 +2,23 @@
 package main
 
 import (
-    "context"
+	"context"
 	"errors"
-    "fmt"
-    "log"
-    "net"
-    "os"
-    "os/exec"
-    "path/filepath"
-    "runtime"
-    "strconv"
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 
-    "github.com/aljLab/srv6-proxy-ebpf/setup"
+	"github.com/aljLab/srv6-proxy-ebpf/pkg/utils"
+	"github.com/aljLab/srv6-proxy-ebpf/setup"
 
-    "github.com/cilium/ebpf"
-    "github.com/cilium/ebpf/link"
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 )
 
 const (
