@@ -40,7 +40,8 @@ def benchmark(
     inner_v4 = False,
     first_hop_mac = "",
     test = False,
-    scenario = "default"
+    scenario = "default",
+    inter_pkt_timeout=INTER_PACKET_TIMEOUT
     ):
     ''' Benchmark a proxy solution by sending packets through it using scapy.
         Args:   
@@ -53,6 +54,7 @@ def benchmark(
             first_hop_mac (string): The mac adress of the first hop to construct correct ethernet frames.
             test (bool): Flag indicating whether or not to persist run data (if --test=true nothing is stored, default: false).
             scenario (str): test scenario to run. Naming schema <srv6|empty>-<ipv4|ipv6>-<#sfc>.
+            inter_packet_timeout (float): the amount of seconds to wait between sending packets.
     '''
     if not send_iface:
         print("sending interface is required. Usage: uv run test.py benchmark --send-iface 'eth0'")
@@ -68,7 +70,7 @@ def benchmark(
     if not receive_iface:
         receive_iface = send_iface
 
-    run_bench(n, send_iface, receive_iface, srv6, inner_v4, first_hop_mac, scenario)
+    run_bench(n, send_iface, receive_iface, srv6, inner_v4, first_hop_mac, scenario, inter_pkt_timeout)
 
     results = [int((rx_times[s] - tx_times[s]) * 1e9) for s in rx_times if s in tx_times]
     misclassified = [1 for s in rx_tags if (s in tx_tags and rx_tags[s] != tx_tags[s])]
@@ -81,7 +83,7 @@ def benchmark(
     print(f"Successfully benchmarked with {n} packets ({send_iface} --> {receive_iface}, srv6: {srv6})")
 
 
-def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool, first_hop_mac:str, scenario:str):
+def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool, first_hop_mac:str, scenario:str, inter_pkt_timeout):
 
     src_mac = netifaces.ifaddresses(send_iface)[netifaces.AF_LINK][0]["addr"]
     if first_hop_mac != "":
@@ -128,7 +130,7 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool
 
             sendp(pkt, iface=send_iface, verbose=False)
 
-            time.sleep(INTER_PACKET_TIMEOUT)
+            time.sleep(inter_pkt_timeout)
     finally:
         time.sleep(RECEIVE_TIMEOUT)
         if send_sniffer.running:
