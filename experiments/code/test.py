@@ -73,6 +73,8 @@ def benchmark(
     results = [int((rx_times[s] - tx_times[s]) * 1e9) for s in rx_times if s in tx_times]
     misclassified = [rx_tags[s] == tx_tags[s] for s in rx_tags if s in tx_tags]
 
+    print("misclassified", misclassified)
+
     report_results(results, misclassified)
 
     if not test:
@@ -136,6 +138,8 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool
             return_sniffer.stop()
         print("rx packets: ", len(rx_times))
         print("tx packets: ", len(tx_times))
+        print("tags (rx): ", rx_tags)
+        print("tags (tx): ", tx_tags)
 
 def packet_received(pkt):
     if Raw not in pkt:
