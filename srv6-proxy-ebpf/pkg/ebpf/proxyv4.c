@@ -1,0 +1,725 @@
+#include "proxy.h"
+
+/*
+Version 4 of the eBPF Proxy. This version is not lane-based like version 3, but based on immutable header fields,
+which uniquely identify a service chain.
+The key corresponding to one sfc (and stored SRH) are computed based on a mask_map for each supported Layer.
+In v4.0.1 support for L3 (IP6, IP4) and L4 (TCP, UDP) is built, but in an easily extensible way.
+The proxy relies on two mask_maps (mask_table_l3, mask_table_l4). The user space program and the eBPF program 
+must agree which index in the map corresponds to which mask (e.g. [ipv4_mask, ipv6_mask] in mask_table_l3).
+The user space loader configures and calculates the masks based on state in the targets spec in the K8s api.
+The ebpf program just loads and uses the maps to compute a key to index into the srh_table.
+*/
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_SRH_CACHE_ENTRIES);
+    __type(key, struct srh_key);
+    __type(value, struct cached_outer); // the cached header structure (lock + len + IPv6 + SRH)
+} srh_table SEC(".maps");
+
+// not modified by xdp programs
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 2*N + 2); 
+    __type(key, __u32);
+    __type(value, struct mac_entry); // the mac addresses fromVNF interface belonging to this lane 
+} mac_addr_table SEC(".maps");
+
+// not modified by xdp programs
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 2*N + 2);
+    __type(key, __u32);
+    __type(value, __u32); // the associated toVNF interface to put out decapsulated traffic
+} link_index_table SEC(".maps");
+
+// not modified by xdp programs
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 2);
+    __type(key, __u32); 
+    __type(value, struct l3_mask_t); 
+} mask_table_l3 SEC(".maps");
+
+// not modified by xdp programs
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 2);
+    __type(key, __u32); 
+    __type(value, struct l4_mask_t); 
+} mask_table_l4 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
+    __uint(max_entries, MAX_L3_L4_COMBINATIONS + 1);
+    __type(key, __u32);
+    __type(value, __u32);
+} progs SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct cached_outer_mock);
+} scratch_table SEC(".maps");
+
+/*
+FUNCTIONS
+*/
+
+static __always_inline
+int parse_srh(struct parsed_srh *p, void *start, void *end)
+{
+    p->eth = start;
+    if((void *)(p->eth + 1) > end)
+        return -1;
+
+    p->ip6 = (void *)(p->eth + 1);
+    if((void *)(p->ip6 + 1) > end)
+        return -1;
+
+    p->srh = (void *)(p->ip6 + 1);
+    // check for fixed len routing header first [ NextHeader | HdrExtLen | RoutingType | SegmentsLeft ]
+    if((void *)((char *)p->srh + 8) > end)  
+        return -1;
+
+    __u8 hdr_ext_len = p->srh->hdrlen;
+    __u8 last_index = p->srh->first_segment;
+
+    p->srh_len = RH_SIZE + hdr_ext_len * 8;
+    if(p->srh_len > MAX_SRH_LEN)
+        return -1;
+
+    if((void *)((char *)p->srh + p->srh_len) > end)
+        return -1;
+    
+    p->outer_len = sizeof(struct ipv6hdr) + p->srh_len;
+    if((void *)((char *)p->ip6 + p->outer_len) > end)
+        return -1;
+
+    if((void *)((char *)p->srh->segments + (p->srh_len - 8)) > end)
+        return -1;
+    
+    p->n_segs = (__u32)last_index + 1; //number of segments in segments list
+    
+    return 0;
+}
+
+
+static __always_inline
+int parse_pkt_tcp_ip4(struct pkt_tcp_ip4 *p, void *start, void *end)
+{
+    p->eth = start;
+    if((void *)(p->eth + 1) > end)
+        return -1;
+
+    p->ip6 = (void *)(p->eth + 1);
+    if((void *)(p->ip6 + 1) > end)
+        return -1;
+
+    p->srh = (void *)(p->ip6 + 1);
+    // check for fixed len routing header first [ NextHeader | HdrExtLen | RoutingType | SegmentsLeft ]
+    if((void *)((char *)p->srh + 8) > end)  
+        return -1;
+
+    __u8 hdr_ext_len = p->srh->hdrlen;
+    __u8 last_index = p->srh->first_segment;
+
+    p->srh_len = RH_SIZE + hdr_ext_len * 8;
+    if(p->srh_len > MAX_SRH_LEN)
+        return -1;
+
+    if((void *)((char *)p->srh + p->srh_len) > end)
+        return -1;
+    
+    p->inner_ip4 = (struct iphdr *)((char *)p->srh + p->srh_len);
+    if((void *)(p->inner_ip4 + 1) > end)
+        return -1;
+    
+    p->tcp = (struct tcphdr *)(p->inner_ip4 + 1);
+    if((void *)(p->tcp + 1) > end)
+        return -1;
+
+    return 0;
+}
+static __always_inline
+int parse_pkt_tcp_ip6(struct pkt_tcp_ip6 *p, void *start, void *end)
+{
+    p->eth = start;
+    if((void *)(p->eth + 1) > end)
+        return -1;
+
+    p->ip6 = (void *)(p->eth + 1);
+    if((void *)(p->ip6 + 1) > end)
+        return -1;
+
+    p->srh = (void *)(p->ip6 + 1);
+    // check for fixed len routing header first [ NextHeader | HdrExtLen | RoutingType | SegmentsLeft ]
+    if((void *)((char *)p->srh + 8) > end)  
+        return -1;
+
+    __u8 hdr_ext_len = p->srh->hdrlen;
+    __u8 last_index = p->srh->first_segment;
+
+    p->srh_len = RH_SIZE + hdr_ext_len * 8;
+    if(p->srh_len > MAX_SRH_LEN)
+        return -1;
+
+    if((void *)((char *)p->srh + p->srh_len) > end)
+        return -1;
+    
+    p->inner_ip6 = (struct ipv6hdr *)((char *)p->srh + p->srh_len);
+    if((void *)(p->inner_ip6 + 1) > end)
+        return -1;
+    
+    p->tcp = (struct tcphdr *)(p->inner_ip6 + 1);
+    if((void *)(p->tcp + 1) > end)
+        return -1;
+
+    return 0;
+}
+static __always_inline
+int parse_pkt_udp_ip4(struct pkt_udp_ip4 *p, void *start, void *end)
+{
+    p->eth = start;
+    if((void *)(p->eth + 1) > end)
+        return -1;
+
+    p->ip6 = (void *)(p->eth + 1);
+    if((void *)(p->ip6 + 1) > end)
+        return -1;
+
+    p->srh = (void *)(p->ip6 + 1);
+    // check for fixed len routing header first [ NextHeader | HdrExtLen | RoutingType | SegmentsLeft ]
+    if((void *)((char *)p->srh + 8) > end)  
+        return -1;
+
+    __u8 hdr_ext_len = p->srh->hdrlen;
+    __u8 last_index = p->srh->first_segment;
+
+    p->srh_len = RH_SIZE + hdr_ext_len * 8;
+    if(p->srh_len > MAX_SRH_LEN)
+        return -1;
+
+    if((void *)((char *)p->srh + p->srh_len) > end)
+        return -1;
+    
+    p->inner_ip4 = (struct iphdr *)((char *)p->srh + p->srh_len);
+    if((void *)(p->inner_ip4 + 1) > end)
+        return -1;
+    
+    p->udp = (struct udphdr *)(p->inner_ip4 + 1);
+    if((void *)(p->udp + 1) > end)
+        return -1;
+
+    return 0;
+}
+static __always_inline
+int parse_pkt_udp_ip6(struct pkt_udp_ip6 *p, void *start, void *end)
+{
+    p->eth = start;
+    if((void *)(p->eth + 1) > end)
+        return -1;
+
+    p->ip6 = (void *)(p->eth + 1);
+    if((void *)(p->ip6 + 1) > end)
+        return -1;
+
+    p->srh = (void *)(p->ip6 + 1);
+    // check for fixed len routing header first [ NextHeader | HdrExtLen | RoutingType | SegmentsLeft ]
+    if((void *)((char *)p->srh + 8) > end)  
+        return -1;
+
+    __u8 hdr_ext_len = p->srh->hdrlen;
+    __u8 last_index = p->srh->first_segment;
+
+    p->srh_len = RH_SIZE + hdr_ext_len * 8;
+    if(p->srh_len > MAX_SRH_LEN)
+        return -1;
+
+    if((void *)((char *)p->srh + p->srh_len) > end)
+        return -1;
+    
+    p->inner_ip6 = (void *)((char *)p->srh + p->srh_len);
+    if((void *)(p->inner_ip6 + 1) > end)
+        return -1;
+    
+    p->udp = (void*)(p->inner_ip6 + 1);
+    if((void *)(p->udp + 1) > end)
+        return -1;
+
+    return 0;
+}
+
+
+static __always_inline
+int parse_inner_ip4(struct iphdr *ip4, __u32 *l3_len, __u32 *l4_proto, void *end)
+{
+    if((void *)(ip4 + 1) > end)
+        return -1;
+
+    *l3_len = 20; //forget about options for now... (__u32)(ip6->ihl) * 4; 
+    *l4_proto = (__u32)ip4->protocol;
+    
+    return 0;
+}
+
+static __always_inline
+int parse_inner_ip6(struct ipv6hdr *ip6, __u32 *l3_len, __u32 *l4_proto, void *end)
+{
+    if((void *)(ip6 + 1) > end)
+        return -1;
+
+    *l3_len = sizeof(struct ipv6hdr);
+    *l4_proto = (__u32)ip6->nexthdr;
+    
+    return 0;
+}
+
+static __always_inline
+int parse_inner_l3(
+    char *start, 
+    __u32 *inner_l3_version, 
+    __u32 *l3_len, 
+    __u32 *l4_proto, 
+    void *end, 
+    struct inner_l3_hdr *inner
+)
+{
+/*     if((void *)(start) > end){
+        bpf_printk("291: failed > end check");
+        return -1;
+    } */
+
+
+    if((void *)(start + 1) > end){
+        bpf_printk("296: failed > end check");
+        return -1;
+    }
+
+    *inner_l3_version = *((__u8 *)start) >> 4;
+    bpf_printk("Found inner version %u", *inner_l3_version);
+
+    switch (*inner_l3_version)
+    {
+    case 4:
+        inner->ip4 = (struct iphdr *)(start);
+        if(parse_inner_ip4(inner->ip4, l3_len, l4_proto, end) < 0)
+            return -1;
+        break;
+    case 6:
+        inner->ip6 = (struct ipv6hdr *)(start);
+        if(parse_inner_ip6(inner->ip6, l3_len, l4_proto, end) < 0)
+            return -1;
+        break;
+    
+    default:
+        break;
+    }
+
+    return 0;
+}
+
+static __always_inline
+int mask_hdr(__u8 *hdr, __u8 *mask, __u32 len, __u8 *dst, void *end)
+{
+    for (__u32 i = 0; i < MAX_FIXED_HDR_LEN; i++) {
+        if (i >= len) break;
+        if ((void *)(hdr + i + 1) > end) {
+            bpf_printk("hdr=%llx end=%llx i=%u len=%u", (__u64)(long)hdr, (__u64)(long)end, i, len);
+            return -1;
+        }
+        dst[i] = mask[i] & hdr[i];
+    }
+    return 0;
+}
+
+static __always_inline
+struct srh_key *read_key_from_meta(void *meta, void *start)
+{
+    if ((void *)((char *)meta + sizeof(struct key_meta)) > start)
+        return NULL;
+    return &((struct key_meta *)meta)->key;
+}
+
+/*
+COPIED FROM V3
+*/
+static __always_inline
+int update_srh(struct parsed_srh *p, void *end)
+{   
+    if(p->srh_len > MAX_SRH_LEN)
+        return -1;
+    if((void *)((char *)p->srh + p->srh_len) > end)
+        return -1;
+    if((void *)((char *)p->srh + 8) > end)
+        return -1;
+    
+    if(p->srh->segments_left < 1)
+        return XDP_PASS; // pass on, seems to be last segment which we can't handle
+    p->srh->segments_left--;
+    __u8 index = p->srh->segments_left;
+
+    if(index >= (p->srh_len - 8)/sizeof(struct in6_addr)) // ensure index is not bigger than the actual length of the segment list
+        return -1;
+    if((void *)((struct in6_addr *)p->srh->segments + index + 1) > end)
+        return -1;
+    
+    __builtin_memcpy((void *)&(p->ip6->daddr), (void *)((struct in6_addr *)p->srh->segments + index), sizeof(p->ip6->daddr));
+
+    return 0;
+}
+
+static __always_inline
+int update_cached_header(struct cached_outer *cached, char *hdr, __u32 len, void *end)
+{
+    if(len > MAX_CACHED_HDR)
+        return -1;
+    if(sizeof(cached->bytes) < len) // check capacity (not actual length)
+        return -1;
+    if((void *)(hdr + len) > end)
+        return -1;
+
+    bpf_spin_lock(&cached->lock);
+    cached->len = len;
+
+    for(__u32 i = 0; i < MAX_SRH_LEN + sizeof(struct ipv6hdr); i++){
+        if(i >= len)
+            break;
+        if((void *)(hdr + i + 1) > end){
+            bpf_spin_unlock(&cached->lock);
+            return -1;
+        }
+        cached->bytes[i] = hdr[i];
+    }
+    bpf_spin_unlock(&cached->lock);
+
+    return 0;
+}
+
+static __always_inline
+int cp_ethhdr_in_front_of_inner(struct parsed_srh *p)
+{
+    __builtin_memcpy((void *)((char *)p->eth + p->outer_len), (void *)p->eth, sizeof(struct ethhdr));
+    return 0;
+}
+
+static __always_inline
+int update_eth_hdr(void *start, void *end)
+{
+    struct ethhdr *eth = start;
+    if((void *)((char *)eth + sizeof(struct ethhdr)) > end)
+        return -1;
+
+    // lookup mac addresses
+    __u32 src_key = 0;
+    __u32 dst_key = 1;
+    struct mac_entry *src_mac = bpf_map_lookup_elem(&mac_addr_table, &src_key);
+    struct mac_entry *dst_mac = bpf_map_lookup_elem(&mac_addr_table, &dst_key);
+
+    if (!src_mac || !dst_mac) 
+        return -1;
+
+    // replace mac addresses
+    __builtin_memcpy((void *)eth->h_source, (void *)src_mac->addr, sizeof(eth->h_source));
+    __builtin_memcpy((void *)eth->h_dest, (void *)dst_mac->addr, sizeof(eth->h_dest));
+
+    // update next proto
+    if((void *)((char *)eth + sizeof(struct ethhdr) + 1) > end)
+        return -1;
+
+    __u8 version = *((__u8 *)eth + sizeof(struct ethhdr)) >> 4;
+    if(version == 6)
+    {
+        eth->h_proto = bpf_htons(ETH_P_IPV6);
+    }
+    else if (version == 4)
+    {
+        eth->h_proto = bpf_htons(ETH_P_IP);
+    } else 
+    {
+        return -1;
+    }
+
+    return 0;
+}
+
+/*
+XDP PROGRAMS
+*/
+
+SEC("xdp")
+int proxy_ingress(struct xdp_md *ctx)
+{
+    bpf_printk("entered proxy ingress program (correlation-based)");
+    if(bpf_xdp_adjust_meta(ctx, -(int)sizeof(struct key_meta)) < 0)
+        return XDP_ABORTED;
+    
+    void *start = (void *)(long)ctx->data;
+    void *end = (void *)(long)ctx->data_end;
+    void *meta = (void *)(long)ctx->data_meta;
+
+    if ((void *)((char *)meta + sizeof(struct key_meta)) > start)
+        return XDP_ABORTED;
+
+    struct key_meta *key_meta_p = (struct key_meta *)meta;
+    struct srh_key *key = (struct srh_key *)&(key_meta_p->key);
+    
+    struct parsed_srh p;
+    if(parse_srh(&p, start, end) < 0)
+        return XDP_DROP;
+    bpf_printk("Parsed srh...");
+    __u32 inner_l3_version = -1;
+    __u32 l3_len = -1;
+    __u32 l4_proto = -1; // should be 6 (TCP) or 17 (UDP)
+    char *inner_start = (char *)((char *)p.srh + p.srh_len);
+    struct inner_l3_hdr inner = {0};
+    if(parse_inner_l3(inner_start, &inner_l3_version, &l3_len, &l4_proto, end, &inner) < 0 || l3_len < 0)
+        return XDP_DROP;
+
+    if(l4_proto != IPPROTO_TCP && l4_proto != IPPROTO_UDP)
+        return XDP_ABORTED;
+
+    bpf_printk("Parsed inner L3 packet with version %u and next_proto %u...", inner_l3_version, l4_proto);
+    struct l3_mask_t *l3_mask = bpf_map_lookup_elem(&mask_table_l3, &inner_l3_version);
+
+    if(!l3_mask)
+        return XDP_DROP;
+
+    bpf_printk("Masking key with L3 Mask...");
+    // write masked value directly into key->l3 (in data-meta)
+    __u8 *inner_hdr;
+    switch (inner_l3_version)
+    {
+    case 4:
+            inner_hdr = (__u8 *)inner.ip4;
+        break;
+    case 6:
+            inner_hdr = (__u8 *)inner.ip6;
+        break;
+    
+    default:
+        return -1;
+        break;
+    }
+
+    if (!inner_hdr)
+        return XDP_DROP;
+
+    if(mask_hdr(inner_hdr, (__u8 *)l3_mask->bytes, l3_len, (__u8 *)key->l3, end) < 0){
+        return XDP_DROP;
+    }
+
+    bpf_printk("Tail calling...");
+    if(inner_l3_version == 4)
+    {
+        if(l4_proto == IPPROTO_TCP)
+        {
+            bpf_tail_call(ctx, &progs, 0);
+        } 
+        else if (l4_proto == IPPROTO_UDP)
+        {
+            bpf_tail_call(ctx, &progs, 1);
+        } else 
+        {
+            return XDP_DROP;
+        }
+    } else if (inner_l3_version == 6)
+    {
+        if(l4_proto == IPPROTO_TCP)
+        {
+            bpf_tail_call(ctx, &progs, 2);
+        } 
+        else if (l4_proto == IPPROTO_UDP)
+        {
+            bpf_tail_call(ctx, &progs, 3);
+        } else 
+        {
+            return XDP_DROP;
+        }
+    }
+
+    return XDP_ABORTED;
+
+}
+
+
+/* SEC("xdp")
+int proxy_egress(struct xdp_md *ctx)
+{
+    void *start = (void*)(long)ctx->data;
+    void *end = (void*)(long)ctx->data-end;
+    
+    // parse L3
+    if(parse)
+    // compute L3 Key
+    // parse L4
+    // compute L4 key
+    // fetch header
+
+    // do exactly as v3 encap
+} */
+
+SEC("xdp")
+int tcp_in_ip4(struct xdp_md *ctx)
+{
+    void *start = (void *)(long)ctx->data;
+    void *end = (void *)(long)ctx->data_end;
+    void *meta = (void *)(long)ctx->data_meta;
+
+    struct srh_key *key = read_key_from_meta(meta, start); 
+    if(!key)
+        return XDP_ABORTED;
+    struct pkt_tcp_ip4 pkt;
+    if(parse_pkt_tcp_ip4(&pkt, start, end) < 0)
+        return XDP_DROP;
+    __u32 map_key = IPPROTO_TCP;
+    struct l4_mask_t *l4_mask = bpf_map_lookup_elem(&mask_table_l4, &map_key);
+    if(!l4_mask)
+        return XDP_DROP;
+
+    if(mask_hdr((__u8 *)pkt.tcp, (__u8 *)l4_mask->bytes, sizeof(struct tcphdr), (__u8 *)key->l4, end) < 0)
+        return XDP_DROP;
+    
+    bpf_tail_call(ctx, &progs, MAX_L3_L4_COMBINATIONS);
+
+    return XDP_ABORTED;
+}
+SEC("xdp")
+int udp_in_ip4(struct xdp_md *ctx)
+{
+    bpf_printk("Entered udp_in_ip4...");
+    void *start = (void *)(long)ctx->data;
+    void *end = (void *)(long)ctx->data_end;
+    void *meta = (void *)(long)ctx->data_meta;
+
+    struct srh_key *key = read_key_from_meta(meta, start); 
+    if(!key)
+        return XDP_ABORTED;
+    struct pkt_udp_ip4 pkt;
+    if(parse_pkt_udp_ip4(&pkt, start, end) < 0)
+        return XDP_DROP;
+    __u32 map_key = IPPROTO_UDP;
+    struct l4_mask_t *l4_mask = bpf_map_lookup_elem(&mask_table_l4, &map_key);
+    if(!l4_mask)
+        return XDP_DROP;
+
+    if(mask_hdr((__u8 *)pkt.udp, (__u8 *)l4_mask->bytes, sizeof(struct udphdr), (__u8 *)key->l4, end) < 0)
+        return XDP_DROP;
+    
+    bpf_tail_call(ctx, &progs, MAX_L3_L4_COMBINATIONS);
+
+    return XDP_ABORTED;
+}
+SEC("xdp")
+int tcp_in_ip6(struct xdp_md *ctx)
+{
+    void *start = (void *)(long)ctx->data;
+    void *end = (void *)(long)ctx->data_end;
+    void *meta = (void *)(long)ctx->data_meta;
+
+    struct srh_key *key = read_key_from_meta(meta, start); 
+    if(!key)
+        return XDP_ABORTED;
+    struct pkt_tcp_ip6 pkt;
+    if(parse_pkt_tcp_ip6(&pkt, start, end) < 0)
+        return XDP_DROP;
+    __u32 map_key = IPPROTO_TCP;
+    struct l4_mask_t *l4_mask = bpf_map_lookup_elem(&mask_table_l4, &map_key);
+    if(!l4_mask)
+        return XDP_DROP;
+
+    if(mask_hdr((__u8 *)pkt.tcp, (__u8 *)l4_mask->bytes, sizeof(struct tcphdr), (__u8 *)key->l4, end) < 0)
+        return XDP_DROP;
+    
+    bpf_tail_call(ctx, &progs, MAX_L3_L4_COMBINATIONS);
+
+    return XDP_ABORTED;
+}
+SEC("xdp")
+int udp_in_ip6(struct xdp_md *ctx)
+{
+    bpf_printk("Entered udp_in_ip6...");
+    void *start = (void *)(long)ctx->data;
+    void *end = (void *)(long)ctx->data_end;
+    void *meta = (void *)(long)ctx->data_meta;
+
+    struct srh_key *key = read_key_from_meta(meta, start); 
+    if(!key)
+        return XDP_ABORTED;
+    struct pkt_udp_ip6 pkt;
+    if(parse_pkt_udp_ip6(&pkt, start, end) < 0)
+        return XDP_DROP;
+    __u32 map_key = IPPROTO_UDP;
+    struct l4_mask_t *l4_mask = bpf_map_lookup_elem(&mask_table_l4, &map_key);
+    if(!l4_mask)
+        return XDP_DROP;
+
+    if(mask_hdr((__u8 *)pkt.udp, (__u8 *)l4_mask->bytes, sizeof(struct udphdr), (__u8 *)key->l4, end) < 0)
+        return XDP_DROP;
+    
+    bpf_tail_call(ctx, &progs, MAX_L3_L4_COMBINATIONS);
+
+    return XDP_ABORTED;
+}
+
+SEC("xdp")
+int decap(struct xdp_md *ctx)
+{   
+    void *start = (void *)(long)ctx->data;
+    void *end = (void *)(long)ctx->data_end;
+    void *meta = (void *)(long)ctx->data_meta;
+
+    struct srh_key *key = read_key_from_meta(meta, start); 
+    if(!key)
+        return XDP_ABORTED;
+
+    struct parsed_srh parsed = {};
+    struct parsed_srh *p = &parsed;
+    if(parse_srh(p, start, end) < 0)
+        return XDP_DROP;
+
+    if(update_srh(p, end) < 0)
+        return XDP_DROP;
+
+    struct cached_outer *cached;
+    cached = bpf_map_lookup_elem(&srh_table, key);
+    if(!cached){
+        // not initialized -> zero init from scratch map to save stack space
+        __u32 zero_key = 0;
+        struct cached_outer_mock *zeroed = bpf_map_lookup_elem(&scratch_table, &zero_key);
+        if(!zeroed)
+            return XDP_DROP;
+        bpf_map_update_elem(&srh_table, key, zeroed->bytes, BPF_NOEXIST);
+        cached = bpf_map_lookup_elem(&srh_table, key);
+        if(!cached)
+            return XDP_DROP;
+    }
+    if(update_cached_header(cached, (char *)p->ip6, p->outer_len, end) < 0)
+        return XDP_DROP;
+
+    if(cp_ethhdr_in_front_of_inner(p))
+    // get dst/src mac addresses update eth header h_proto in packet
+
+    if(bpf_xdp_adjust_head(ctx, p->outer_len) < 0)
+        return XDP_DROP;
+
+    // refetch pointers/reparse needed headers
+    start = (void *)(long)ctx->data;
+    end = (void *)(long)ctx->data_end;
+
+    if(update_eth_hdr(start, end) < 0)
+        return XDP_DROP;
+
+    // fetch linkIndex of outgoing lane interface
+    __u32 link_key = 0;
+    __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &link_key);
+    
+    if(!link_index || !*link_index)
+        return XDP_DROP;
+    bpf_printk("Sending decapsulated packet out of iface with index: %u", *link_index);
+    return bpf_redirect(*link_index, 0);
+}
+
+char LICENSE[] SEC("license") = "GPL";

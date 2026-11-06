@@ -1,6 +1,9 @@
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
+#include <linux/ip.h>
 #include <linux/ipv6.h>
+#include <linux/tcp.h>
+#include <linux/udp.h>
 #include <linux/in.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
@@ -25,6 +28,8 @@ CONSTANTS
 #define MAX_L4_HDR_BYTES 20 // max(max_len(udp_hdr), max_len(tcp_hdr))
 #define MAX_SRH_KEY_LEN MAX_L3_HDR_BYTES + MAX_L4_HDR_BYTES
 #define MAX_SRH_CACHE_ENTRIES 128
+#define MAX_L3_L4_COMBINATIONS 4 // #supported_l3_protos * #supported_l4_protos
+#define MAX_FIXED_HDR_LEN 40 // max(MAX_L3_HDR_BYTES, MAX_L4_HDR_BYTES)
 
 /*
 STRUCTS
@@ -35,6 +40,10 @@ struct cached_outer {
     __u16 len;
     __u16 pad;
     __u8 bytes[MAX_CACHED_HDR];
+};
+
+struct cached_outer_mock {
+    __u8 bytes[sizeof(struct cached_outer)];
 };
 
 struct mac_entry {
@@ -71,6 +80,42 @@ struct parsed_srh {
     __u32 n_segs;
 };
 
+struct pkt_tcp_ip4 {
+    struct ethhdr *eth;
+    struct ipv6hdr *ip6;
+    struct ipv6_sr_hdr *srh;
+    struct iphdr *inner_ip4;
+    struct tcphdr *tcp;
+    __u32 srh_len;
+};
+
+struct pkt_tcp_ip6 {
+    struct ethhdr *eth;
+    struct ipv6hdr *ip6;
+    struct ipv6_sr_hdr *srh;
+    struct ipv6hdr *inner_ip6;
+    struct tcphdr *tcp;
+    __u32 srh_len;
+};
+
+struct pkt_udp_ip4 {
+    struct ethhdr *eth;
+    struct ipv6hdr *ip6;
+    struct ipv6_sr_hdr *srh;
+    struct iphdr *inner_ip4;
+    struct udphdr *udp;
+    __u32 srh_len;
+};
+
+struct pkt_udp_ip6 {
+    struct ethhdr *eth;
+    struct ipv6hdr *ip6;
+    struct ipv6_sr_hdr *srh;
+    struct ipv6hdr *inner_ip6;
+    struct udphdr *udp;
+    __u32 srh_len;
+};
+
 struct lane_meta {
     __u32 lane;
 } __attribute__((aligned(4)));
@@ -96,7 +141,11 @@ struct inner_l3_hdr {
     struct iphdr *ip4;
 };
 
-struct inner_l4_hdr {
+/* struct inner_l4_hdr {
     struct tcphdr *tcp;
     struct udphdr *udp;
+}; */
+
+struct key_meta {
+    struct srh_key key;
 };

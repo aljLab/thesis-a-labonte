@@ -24,6 +24,8 @@ import (
 
 const (
 	cachedValueSize = 2104 // lock + len + pad + IPv6 header + max SRH + routingHdr
+    SRH_TABLE_HASH_MAP_SIZE = 128
+    SRH_HASH_KEY_SIZE = 60
 )
 
 func main() {
@@ -99,7 +101,7 @@ func runCorrelationBasedProxy(){
             log.Fatalf("Error when creating collection: %s", err);
         }
     }
-    fmt.Printf("Is err really nil: %s? is base not nil %s?\n", err, base)
+    fmt.Printf("Is err really nil: %s? is base not nil \n%s\n?\n", err, base)
     fmt.Printf("Created Collection, no verifier errors... Trying to defer closing the collection\n")
 
     defer base.Close()
@@ -110,17 +112,17 @@ func runCorrelationBasedProxy(){
     macMap := base.Maps["mac_addr_table"]
     l3MaskMap := base.Maps["mask_table_l3"]
     l4MaskMap := base.Maps["mask_table_l4"]
+    tailcallMap := base.Maps["progs"]
+    scratchMap := base.Maps["scratch_table"]
 
-    if srhMap == nil || linkMap == nil || macMap == nil || l3MaskMap != nil {
+    if srhMap == nil || linkMap == nil || macMap == nil || l3MaskMap == nil || l4MaskMap == nil || tailcallMap == nil || scratchMap == nil {
         log.Fatal("expected shared BPF maps are missing")
     }
 
     // All maps are populated before attaching any program.
     zeroValue := make([]byte, cachedValueSize)
-    for i := 0; i < n; i++ {
-        if err := srhMap.Put(uint32(i), zeroValue); err != nil {
-            log.Fatal("initialize SRH entry: ", err)
-        }
+    if err := scratchMap.Put(uint32(0), zeroValue); err != nil {
+        log.Fatal("initialize SRH scratch table entry: ", err)
     }
 
     log.Printf("\nMacIndexMap %s\n", macIndexMappings)
@@ -180,15 +182,32 @@ func runCorrelationBasedProxy(){
             }
         }
     }
+    tcpInIp4 := base.Programs["tcp_in_ip4"]
+    tcpInIp6 := base.Programs["tcp_in_ip6"]
+    udpInIp4 := base.Programs["udp_in_ip4"]
+    udpInIp6 := base.Programs["udp_in_ip6"]
+    decapProg := base.Programs["decap"]
+    tailcalls := []*ebpf.Program{ // ordering must match the ebpf program map retrieval in proxy_ingress!
+        tcpInIp4,
+        tcpInIp6,
+        udpInIp4,
+        udpInIp6,
+        decapProg,
+    }
+    for i, tc := range tailcalls {
+        err = tailcallMap.Put(uint32(i), tc); if err != nil {
+            log.Fatal("populating tailcall map: ", err)
+        }
+    }
 
     fmt.Println("Initialized all map values")
 
 	/*
     * Attach decap to dispatcher
 	*/
-
-    classifyProg := base.Programs["classify_sfc"]
-    if classifyProg == nil {
+    // attach all tailcalls
+    ingressProg := base.Programs["proxy_ingress"]
+    if ingressProg == nil {
         log.Fatal("decap program missing")
     }
 
@@ -201,11 +220,11 @@ func runCorrelationBasedProxy(){
 
     decapIndex := macIndexMappings[2*n].LinkIndex
     decapLink, err := link.AttachXDP(link.XDPOptions{
-        Program:   classifyProg,
+        Program:   ingressProg,
         Interface: int(decapIndex),
     })
     if err != nil {
-        log.Fatal("attach classify prog (-> tailcall to decap): ", err)
+        log.Fatal("attach ingress prog: ", err)
     }
     links = append(links, decapLink)
 
