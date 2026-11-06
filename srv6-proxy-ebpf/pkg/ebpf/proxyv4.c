@@ -677,8 +677,11 @@ int proxy_egress(struct xdp_md *ctx)
         return XDP_DROP;
     }
 
-    if(l4_proto != IPPROTO_TCP && l4_proto != IPPROTO_UDP)
+    if(l4_proto != IPPROTO_TCP && l4_proto != IPPROTO_UDP){
+        if(l4_proto == 43)
+            bpf_printk("Weird 43 err happened again, not decapsulating?");
         return XDP_ABORTED;
+    }
 
     struct l3_mask_t *l3_mask = bpf_map_lookup_elem(&mask_table_l3, &inner_l3_version);
 
