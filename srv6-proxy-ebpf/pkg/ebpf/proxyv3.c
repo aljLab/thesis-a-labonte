@@ -502,7 +502,6 @@ int classify_sfc(struct xdp_md *ctx)
     
     struct lane_meta *lane_meta = (struct lane_meta *)meta;
     lane_meta->lane = lane;
-    bpf_printk("Calling tail...");
     bpf_tail_call(ctx, &progs, 0);
     return XDP_ABORTED;
 }
@@ -544,18 +543,18 @@ int decap(struct xdp_md *ctx)
         return XDP_DROP;
 
     // refetch pointers/reparse needed headers
-    start = (void *)(long)ctx->data;
+   /*  start = (void *)(long)ctx->data;
     end = (void *)(long)ctx->data_end;
 
     if(update_eth_hdr(start, end, lane) < 0)
-        return XDP_DROP;
+        return XDP_DROP; */
 
     // fetch linkIndex of outgoing lane interface
     __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &lane);
     
     if(!link_index || !*link_index)
         return XDP_DROP;
-    bpf_printk("Sending decapsulated packet out of iface with index: %u", *link_index);
+
     return bpf_redirect(*link_index, 0);
 }
 

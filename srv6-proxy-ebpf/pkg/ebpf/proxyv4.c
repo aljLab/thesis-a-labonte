@@ -566,7 +566,6 @@ XDP PROGRAMS
 SEC("xdp")
 int proxy_ingress(struct xdp_md *ctx)
 {
-    bpf_printk("Entered proxy ingress;");
     if(bpf_xdp_adjust_meta(ctx, -(int)sizeof(struct key_meta)) < 0)
         return XDP_ABORTED;
     
@@ -584,8 +583,6 @@ int proxy_ingress(struct xdp_md *ctx)
     if(parse_srh(&p, start, end) < 0)
         return XDP_DROP;
 
-    bpf_printk("Ingress: parsed p->srh_len=%u, p->outer_len=%u;", p.srh_len, p.outer_len);
-
     __u32 inner_l3_version = -1;
     __u32 l3_len = -1;
     __u32 l4_proto = -1; // should be 6 (TCP) or 17 (UDP)
@@ -594,18 +591,14 @@ int proxy_ingress(struct xdp_md *ctx)
     if(parse_inner_l3(inner_start, &inner_l3_version, &l3_len, &l4_proto, end, &inner) < 0 || l3_len < 0)
         return XDP_DROP;
 
-    bpf_printk("Ingress: parsed L3 version=%u, len=%u, next_proto=%u;", inner_l3_version, l3_len, l4_proto);
-    if(l4_proto != IPPROTO_TCP && l4_proto != IPPROTO_UDP){
-        if(l4_proto == 43)
-            bpf_printk("Weird 43 err happened again, not decapsulating?");
+    if(l4_proto != IPPROTO_TCP && l4_proto != IPPROTO_UDP)
         return XDP_ABORTED;
-    }
+
     struct l3_mask_t *l3_mask = bpf_map_lookup_elem(&mask_table_l3, &inner_l3_version);
 
     if(!l3_mask)
         return XDP_DROP;
 
-    bpf_printk("Ingress: Determining inner header");
     // write masked value directly into key->l3 (in data-meta)
     __u8 *inner_hdr;
     switch (inner_l3_version)
@@ -621,16 +614,14 @@ int proxy_ingress(struct xdp_md *ctx)
         return -1;
         break;
     }
-    bpf_printk("Ingress: Determining inner header");
 
     if (!inner_hdr)
         return XDP_DROP;
-    bpf_printk("Ingress: masking l3");
+
     if(mask_hdr(inner_hdr, (__u8 *)l3_mask->bytes, l3_len, (__u8 *)key->l3, end) < 0){
         return XDP_DROP;
     }
     // order in main setup: [0]ip4/tcp [1]ip6/tcp [2]ip4/udp [3]ip6/udp
-    bpf_printk("Tailcalling;");
     if(inner_l3_version == 4)
     {
         if(l4_proto == IPPROTO_TCP)
@@ -666,7 +657,6 @@ int proxy_ingress(struct xdp_md *ctx)
 SEC("xdp")
 int proxy_egress(struct xdp_md *ctx)
 {   
-    bpf_printk("Entered Egress");
     void *start = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
     
@@ -681,17 +671,11 @@ int proxy_egress(struct xdp_md *ctx)
     struct inner_l3_hdr inner = {0};
     char *inner_start = (char *)(eth + 1);
     if(parse_inner_l3(inner_start, &inner_l3_version, &l3_len, &l4_proto, end, &inner) < 0){
-        bpf_printk("Dropped in parse_inner_l3...");
         return XDP_DROP;
     }
 
-    bpf_printk("Egress: l4_proto %u, version %u", l4_proto, inner_l3_version);
-
-    if(l4_proto != IPPROTO_TCP && l4_proto != IPPROTO_UDP){
-        if(l4_proto == 43)
-            bpf_printk("Weird 43 err happened again, not decapsulating?");
+    if(l4_proto != IPPROTO_TCP && l4_proto != IPPROTO_UDP)
         return XDP_ABORTED;
-    }
 
     struct l3_mask_t *l3_mask = bpf_map_lookup_elem(&mask_table_l3, &inner_l3_version);
 
@@ -741,7 +725,6 @@ int proxy_egress(struct xdp_md *ctx)
     // from v3
     struct cached_outer *cached = bpf_map_lookup_elem(&srh_table, &key);
     if(!cached){
-        bpf_printk("No cached entry was found with calculated key, did something change fields?");
         return XDP_DROP; // if no entry is found, something must have gone wrong -> drop the packet
     }
 
@@ -784,14 +767,12 @@ int proxy_egress(struct xdp_md *ctx)
     __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &link_index_key);
     if(!link_index)
         return XDP_DROP;
-    bpf_printk("Leaving egress.");
     return bpf_redirect(*link_index, 0);
 }
 
 SEC("xdp")
 int tcp_in_ip4(struct xdp_md *ctx)
 {
-    bpf_printk("Entered tcp_in_ip4");
     void *start = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
     void *meta = (void *)(long)ctx->data_meta;
@@ -817,7 +798,6 @@ int tcp_in_ip4(struct xdp_md *ctx)
 SEC("xdp")
 int udp_in_ip4(struct xdp_md *ctx)
 {
-    bpf_printk("Entered udp_in_ip4");
     void *start = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
     void *meta = (void *)(long)ctx->data_meta;
@@ -843,7 +823,6 @@ int udp_in_ip4(struct xdp_md *ctx)
 SEC("xdp")
 int tcp_in_ip6(struct xdp_md *ctx)
 {
-    bpf_printk("Entered tcp_in_ip6");
     void *start = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
     void *meta = (void *)(long)ctx->data_meta;
@@ -869,7 +848,6 @@ int tcp_in_ip6(struct xdp_md *ctx)
 SEC("xdp")
 int udp_in_ip6(struct xdp_md *ctx)
 {
-    bpf_printk("Entered udp_in_ip6");
     void *start = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
     void *meta = (void *)(long)ctx->data_meta;
@@ -896,7 +874,6 @@ int udp_in_ip6(struct xdp_md *ctx)
 SEC("xdp")
 int decap(struct xdp_md *ctx)
 {   
-    bpf_printk("entered decap tailcall...");
     void *start = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
     void *meta = (void *)(long)ctx->data_meta;
@@ -938,14 +915,12 @@ int decap(struct xdp_md *ctx)
     if(bpf_xdp_adjust_head(ctx, p->outer_len) < 0)
         return XDP_DROP;
 
-    // refetch pointers/reparse needed headers
+    /* // refetch pointers/reparse needed headers
     start = (void *)(long)ctx->data;
     end = (void *)(long)ctx->data_end;
 
     if(update_eth_hdr(start, end) < 0)
-        return XDP_DROP;
-    
-    bpf_printk("Ingress: srh_len: %u, outer_len: %u", p->srh_len, p->outer_len);
+        return XDP_DROP; */
 
     // fetch linkIndex of outgoing lane interface
     __u32 link_key = 0;

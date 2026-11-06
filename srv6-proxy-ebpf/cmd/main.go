@@ -234,7 +234,7 @@ func runCorrelationBasedProxy(){
     * ENCAP
     */
 
-    /* encapIface := macIndexMappings[1] // with n = 1, 
+    encapIface := macIndexMappings[1] // with n = 1, 
 
     encapProg := base.Programs["proxy_egress"]
     if encapProg == nil {
@@ -260,7 +260,7 @@ func runCorrelationBasedProxy(){
         "decap attached to ifaceIndex %d; shared maps initialized for %d lanes\n",
         decapIndex, n,
     )
- */
+
     select {}
 }
 
