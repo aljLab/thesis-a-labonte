@@ -537,9 +537,9 @@ int decap(struct xdp_md *ctx)
     if(cp_ethhdr_in_front_of_inner(p))
     // get dst/src mac addresses update eth header h_proto in packet
 
-    /* if(update_eth_hdr(p->eth, end, lane) < 0)
+    if(update_eth_hdr(p->eth, end, lane) < 0)
         return XDP_DROP;
- */
+
     if(bpf_xdp_adjust_head(ctx, p->outer_len) < 0)
         return XDP_DROP;
 
