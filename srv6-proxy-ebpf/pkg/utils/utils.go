@@ -62,7 +62,6 @@ func GetKeyMaskForProto(fields []ImmutableHeaderField) ([]byte, error) {
 			orBits(mask, layout.Offset, bytes, layout.Width)
 		} 
 	}
-
 	return mask, nil
 }
 

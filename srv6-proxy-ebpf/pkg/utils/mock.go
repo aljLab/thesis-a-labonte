@@ -72,26 +72,12 @@ var MockIPv6ImmutableHdrFields = []ImmutableHeaderField{
 		Field: IPv6_SRC_ADDR,
 		Match: MatchType{
 			Type: BITMASK_MATCH,
-			BitMask: "0xffffffffffff00000000ffffffffffff",
-		},
-	},
-	{
-		Proto: PROTO_IPv6,
-		Field: IPv6_TRAFFIC_CLASS,
-		Match: MatchType{
-			Type: EXACT_MATCH,
-		},
-	},
-	{
-		Proto: PROTO_IPv6,
-		Field: IPv6_FLOW_LABEL,
-		Match: MatchType{
-			Type: EXACT_MATCH,
+			BitMask: "0xffffffffffff00000000000000000000",
 		},
 	},
 }
 
-func getMockMasks(){
+func PrintMockMasks(){
 	maskv4, err := GetKeyMaskForProto(MockIPv4ImmutableHdrFields); if err != nil {
         fmt.Printf("err ipv4 fields: %s\n", err)
     }

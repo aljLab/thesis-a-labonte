@@ -117,7 +117,7 @@ func Setup(conf *Config) ([]MacIndexMapping, error) {
 	// get the mac addresses and indices and populate return array with each endpoint: ifaceName -> {Mac, LinkIndex}
 	// map order: inIfaces..., outifaces..., dispatchVeth, RoutingBridge
 	macIndexMappings := make([]MacIndexMapping, 0, len(conf.InIfaces)+len(conf.OutIfaces)+2)
-	var dispatchMac net.HardwareAddr
+	// var dispatchMac net.HardwareAddr
 	ordered := make([]string, 0, len(conf.InIfaces)+len(conf.OutIfaces)+2)
 	ordered = append(ordered, conf.InIfaces...)
 	ordered = append(ordered, conf.OutIfaces...)
@@ -132,15 +132,15 @@ func Setup(conf *Config) ([]MacIndexMapping, error) {
 		mac := make(net.HardwareAddr, len(attrs.HardwareAddr))
 		copy(mac, attrs.HardwareAddr)
 		macIndexMappings = append(macIndexMappings, MacIndexMapping{Mac: mac, LinkIndex: uint32(attrs.Index)})
-		if name == conf.DispatchVeth {
+		/* if name == conf.DispatchVeth {
 			dispatchMac = mac
-		}
+		} */
 	}
 
 	// create ip neighbor entry for Bogus-IP with lladdr <mac-of-DispatchVeth> nud permanent
 	// (ip -6 neigh replace fd00:0:0:37::1 lladdr <mac> dev <BridgePortVeth> nud permanent)
 	// NeighSet uses create|replace semantics, so re-running just refreshes the entry.
-	if portErr == nil && len(dispatchMac) > 0 {
+	/* if portErr == nil && len(dispatchMac) > 0 {
 		logErr("set neighbor "+BOGUS_IPV6, netlink.NeighSet(&netlink.Neigh{
 			LinkIndex:    bridgePort.Attrs().Index,
 			Family:       netlink.FAMILY_V6,
@@ -148,7 +148,7 @@ func Setup(conf *Config) ([]MacIndexMapping, error) {
 			IP:           net.ParseIP(BOGUS_IPV6),
 			HardwareAddr: dispatchMac,
 		}))
-	}
+	} */
 
 	return macIndexMappings, nil
 }

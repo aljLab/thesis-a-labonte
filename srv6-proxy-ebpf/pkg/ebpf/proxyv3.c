@@ -569,13 +569,12 @@ int encap(struct xdp_md *ctx)
     __u8 version = *((__u8 *)(eth + 1)) >> 4;
 
     __u32 key = ctx->ingress_ifindex;
-    bpf_printk("Received packet on ifindex: %u", key);
+
     // get lane from lane table (based on xdp_md->ingress_ifindex)
     __u32 *lane = bpf_map_lookup_elem(&lane_table, &key);
     
     if(!lane)
         return XDP_DROP;
-    bpf_printk("Received packet for lane: %u", *lane);
 
     struct cached_outer *cached = bpf_map_lookup_elem(&srh_table, lane);
     if(!cached)

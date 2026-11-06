@@ -21,6 +21,11 @@ CONSTANTS
 #define MAX_SRH_LEN MAX_SEGLIST_BYTES + RH_SIZE// 256 (8-bit hdrextLen field) 8-byte blocks + the first 8 octets
 #define MAX_CACHED_HDR (sizeof(struct ipv6hdr) + MAX_SRH_LEN) // account for routing header
 
+#define MAX_L3_HDR_BYTES 40 // max(max_len(ipv6_hdr), max_len(ipv4_hdr))
+#define MAX_L4_HDR_BYTES 20 // max(max_len(udp_hdr), max_len(tcp_hdr))
+#define MAX_SRH_KEY_LEN MAX_L3_HDR_BYTES + MAX_L4_HDR_BYTES
+#define MAX_SRH_CACHE_ENTRIES 128
+
 /*
 STRUCTS
 */
@@ -38,6 +43,7 @@ struct mac_entry {
 };
 
 struct sfc_t {
+    struct bpf_spin_lock lock;
     __u64 last_seen; // monotonic clock value of last encounter of traffic from this service chain
     struct in6_addr segments[MAX_SEGMENTS];
     __u32 n_segs;
@@ -68,3 +74,29 @@ struct parsed_srh {
 struct lane_meta {
     __u32 lane;
 } __attribute__((aligned(4)));
+
+struct proxy_meta {
+    __u32 lane;
+} __attribute__((aligned(4)));
+
+struct srh_key {
+    __u8 l3[MAX_L3_HDR_BYTES];
+    __u8 l4[MAX_L4_HDR_BYTES];
+};
+
+struct l3_mask_t {
+    __u8 bytes[MAX_L3_HDR_BYTES];
+};
+struct l4_mask_t {
+    __u8 bytes[MAX_L4_HDR_BYTES];
+};
+
+struct inner_l3_hdr {
+    struct ipv6hdr *ip6;
+    struct iphdr *ip4;
+};
+
+struct inner_l4_hdr {
+    struct tcphdr *tcp;
+    struct udphdr *udp;
+};

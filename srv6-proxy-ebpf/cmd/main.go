@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -26,7 +27,233 @@ const (
 )
 
 func main() {
-	filePath := "pkg/ebpf/proxyv3.c"
+    var laneBased bool
+    flag.BoolVar(&laneBased, "lane-based", true, "Indicate to use lane-based proxying.")
+    flag.Parse()
+
+    if laneBased {
+        runLaneBasedProxy()
+    } else {
+        runCorrelationBasedProxy()
+    }
+}
+
+func runCorrelationBasedProxy(){
+    fmt.Println("Running correlation-based Proxy...")
+    filePath := "pkg/ebpf/proxyv4.c"
+
+	conf := setup.Config{
+        InIfaces: []string{"bf-in"},
+        OutIfaces: []string{"bf-out"},
+        BridgePortVeth: "br-port",
+        DispatchVeth: "bf-port",
+        RoutingBridgeName: "routing-bridge",
+    }
+
+    macIndexMappings, err := setup.Setup(&conf); if err != nil {
+        log.Fatalf("Could not setup networking: %s", err)
+    }
+
+    fmt.Printf("Set Up Networking\n")
+
+    n := len(conf.InIfaces)
+    ctx := context.Background()
+
+    tmp, err := os.MkdirTemp("", "ebpf-proxy-*")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer os.RemoveAll(tmp)
+
+    fmt.Printf("Compiling programs\n")
+    // compile the ebpf programs
+    baseObj := filepath.Join(tmp, "base.o")
+    compileBPF(ctx, filePath, baseObj, n)
+
+    // load the collection spec
+    spec, err := ebpf.LoadCollectionSpec(baseObj)
+    if err != nil {
+        log.Fatal("load base spec: ", err)
+    }
+
+    // create Collection with high log level
+    base, err := ebpf.NewCollectionWithOptions(
+		spec,
+		ebpf.CollectionOptions{
+				Programs: ebpf.ProgramOptions{
+					LogLevel: ebpf.LogLevelInstruction |
+						ebpf.LogLevelBranch |
+						ebpf.LogLevelStats,
+				},
+            },
+	)
+    
+    // check verifier errors
+    var ve *ebpf.VerifierError
+	if errors.As(err, &ve) {
+		fmt.Printf("Verifier log (%d lines):\n", len(ve.Log))
+		fmt.Println(strings.Join(ve.Log, "\n"))
+		os.Exit(-1)
+	} else {
+        if err != nil {
+            log.Fatalf("Error when creating collection: %s", err);
+        }
+    }
+    fmt.Printf("Is err really nil: %s? is base not nil %s?\n", err, base)
+    fmt.Printf("Created Collection, no verifier errors... Trying to defer closing the collection\n")
+
+    defer base.Close()
+
+    // shared maps
+    srhMap := base.Maps["srh_table"]
+    linkMap := base.Maps["link_index_table"]
+    macMap := base.Maps["mac_addr_table"]
+    l3MaskMap := base.Maps["mask_table_l3"]
+    l4MaskMap := base.Maps["mask_table_l4"]
+
+    if srhMap == nil || linkMap == nil || macMap == nil || l3MaskMap != nil {
+        log.Fatal("expected shared BPF maps are missing")
+    }
+
+    // All maps are populated before attaching any program.
+    zeroValue := make([]byte, cachedValueSize)
+    for i := 0; i < n; i++ {
+        if err := srhMap.Put(uint32(i), zeroValue); err != nil {
+            log.Fatal("initialize SRH entry: ", err)
+        }
+    }
+
+    log.Printf("\nMacIndexMap %s\n", macIndexMappings)
+
+
+    // Link-index keys 0..n-1 point to the toVNF interfaces.
+    for i, iface := range macIndexMappings {
+        // inIfaces..., OutIfaces..., DispatchVeth, RoutingBridge
+        // put LinkIndex in correct spot in LinIndex
+        if err := linkMap.Put(uint32(i), uint32(iface.LinkIndex)); err != nil {
+            log.Fatal("populate lane LinkIndex: ", err)
+        }
+        // put mac addr in correct place in macMap
+        if err := macMap.Put(uint32(i), paddedMAC(iface.Mac)); err != nil {
+            log.Fatal("populate lane MAC: ", err)
+        }
+    }
+
+    supportedL3Versions := []uint32{4, 6}
+
+    for _, version := range supportedL3Versions {
+        switch(version){
+        case 4:
+            mask, err := utils.GetKeyMaskForProto(utils.MockIPv4ImmutableHdrFields); if err != nil {
+                fmt.Printf("Could not get key mask for IPv4: %s", err)
+            }
+            err = l3MaskMap.Put(version, utils.L3KeyMask{ Bytes: [utils.MAX_L3_HDR_LEN]byte(mask) }); if err != nil {
+                fmt.Printf("Could not insert key mask for version %d.\n", version)
+            }
+        case 6:
+            mask, err := utils.GetKeyMaskForProto(utils.MockIPv6ImmutableHdrFields); if err != nil {
+                fmt.Printf("Could not get key mask for IPv6: %s", err)
+            }
+            err = l3MaskMap.Put(version, utils.L3KeyMask{ Bytes: [utils.MAX_L3_HDR_LEN]byte(mask) }); if err != nil {
+                fmt.Printf("Could not insert key mask for version %d.\n", version)
+            }
+        }
+    }
+
+    supportedL4Protocols := []uint32{6, 17}
+
+    for _, version := range supportedL4Protocols {
+        switch(version){
+        case 6:
+            mask, err := utils.GetKeyMaskForProto(utils.MockTcpImmutableHdrFields); if err != nil {
+                fmt.Printf("Could not get key mask for IPv4: %s", err)
+            }
+            err = l4MaskMap.Put(version, utils.L4KeyMask{ Bytes: [utils.MAX_L4_HDR_LEN]byte(mask) }); if err != nil {
+                fmt.Printf("Could not insert key mask for version %d.\n", version)
+            }
+        case 17:
+            mask, err := utils.GetKeyMaskForProto(utils.MockUdpImmutableHdrFields); if err != nil {
+                fmt.Printf("Could not get key mask for IPv6: %s", err)
+            }
+            err = l4MaskMap.Put(version, utils.L4KeyMask{ Bytes: [utils.MAX_L4_HDR_LEN]byte(mask) }); if err != nil {
+                fmt.Printf("Could not insert key mask for protocol %d.\n", version)
+            }
+        }
+    }
+
+    fmt.Println("Initialized all map values")
+
+	/*
+    * Attach decap to dispatcher
+	*/
+
+    classifyProg := base.Programs["classify_sfc"]
+    if classifyProg == nil {
+        log.Fatal("decap program missing")
+    }
+
+    var links []link.Link
+    defer func() {
+        for _, l := range links {
+            _ = l.Close()
+        }
+    }()
+
+    decapIndex := macIndexMappings[2*n].LinkIndex
+    decapLink, err := link.AttachXDP(link.XDPOptions{
+        Program:   classifyProg,
+        Interface: int(decapIndex),
+    })
+    if err != nil {
+        log.Fatal("attach classify prog (-> tailcall to decap): ", err)
+    }
+    links = append(links, decapLink)
+
+    fmt.Println("Succesfully attached prog to dispatch interface")
+
+    /* var encapCollections []*ebpf.Collection
+    defer func() {
+        for _, c := range encapCollections {
+            c.Close()
+        }
+    }()
+    
+    for j, iface := range macIndexMappings {
+        if(j >= n && j < 2*n){
+            prog := base.Programs["encap"]
+            if prog == nil {
+                log.Fatal("encap program missing")
+            }
+
+            l, err := link.AttachXDP(link.XDPOptions{
+                Program:   prog,
+                Interface: int(iface.LinkIndex),
+            })
+
+            var ve *ebpf.VerifierError
+            if errors.As(err, &ve) {
+                fmt.Printf("Verifier log (%d lines):\n", len(ve.Log))
+                fmt.Println(strings.Join(ve.Log, "\n"))
+            } else {
+                if err != nil {
+                    log.Fatalf("attach encap to %d: %v", iface.LinkIndex, err)
+                }
+            }
+            fmt.Printf("Succesfully attached prog to fromVNF interface %d\n", j)
+            links = append(links, l)
+        }
+    } */
+
+    fmt.Printf(
+        "decap attached to ifaceIndex %d; shared maps initialized for %d lanes\n",
+        decapIndex, n,
+    )
+
+    select {}
+}
+
+func runLaneBasedProxy(){
+    filePath := "pkg/ebpf/proxyv3.c"
 
 	conf := setup.Config{
         InIfaces: []string{"bf-00", "bf-10", "bf-20", "bf-30"},
@@ -146,7 +373,7 @@ func main() {
     } */
 
     // init per cpu map
-    zeroValue = make([]byte, 2064)
+    zeroValue = make([]byte, 2072) // 2064 /w lock
     for i := range n {
         if err := sfcLaneMap.Put(uint32(i), zeroValue); err != nil {
             log.Fatal("populating sfc lane map: ", err)
@@ -159,7 +386,7 @@ func main() {
         log.Fatal("populating tailcall map: ", err)
     }
 
-    fmt.Println("Initialized all map values\n")
+    fmt.Println("Initialized all map values")
 
 	/*
     * Attach decap to dispatcher

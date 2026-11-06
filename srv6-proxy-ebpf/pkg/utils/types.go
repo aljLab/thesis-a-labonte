@@ -5,7 +5,17 @@ const (
 	IPv6_HDR_LEN_BYTES = 40
 	UDP_HDR_LEN_BYTES = 8
 	TCP_HDR_LEN_BYTES = 20 // excluding 40 bytes of options
+	MAX_L3_HDR_LEN = 40
+	MAX_L4_HDR_LEN = 20
 )
+
+type L3KeyMask struct {
+	Bytes [MAX_L3_HDR_LEN]byte
+}
+
+type L4KeyMask struct {
+	Bytes [MAX_L4_HDR_LEN]byte
+}
 
 type MatchTypeName string
 
