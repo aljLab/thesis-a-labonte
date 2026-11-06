@@ -139,32 +139,45 @@ int update_srh(struct parsed_srh *p, void *end)
 }
 
 static __always_inline
-int update_lane_cache(struct in6_addr *new_segs, __u32 n_seg, struct sfc_t *sfc, void *end)
+int update_lane_cache(struct in6_addr *new_segs, __u32 n_seg, struct sfc_t *sfc, __u64 *rx_time, void *end)
 {
+    bpf_spin_lock(&sfc->lock);
     // calling program takes care of locking
-    if(n_seg > MAX_SEGMENTS) return -1;
+    if(n_seg > MAX_SEGMENTS){
+        bpf_spin_unlock(&sfc->lock);
+        return -1;
+    } 
     //if((void *)(new_segs + n_seg + 1) > end) return -1;
     for(__u32 i = 0; i < MAX_SEGMENTS; i++){
         if(i >= n_seg) break;
-        if((void *)((struct in6_addr *)new_segs + i + 1) > end) return -1;
+        if((void *)((struct in6_addr *)new_segs + i + 1) > end){
+            bpf_spin_unlock(&sfc->lock);
+            return -1;
+        }
         __builtin_memcpy((void *)((struct in6_addr *)sfc->segments + i), (void *)((struct in6_addr *)new_segs + i), sizeof(struct in6_addr));
     }
-
+    sfc->n_segs = n_seg;
+    sfc->last_seen = *rx_time;
+    bpf_spin_unlock(&sfc->lock);
     return 0;
 }
 
 static __always_inline
 int compare_seg_lists(struct sfc_t *sfc, struct in6_addr *new_segs, __u8 *equal, void *end, __u32 n_seg)
-{
+{   
+    bpf_spin_lock(&sfc->lock);
     for(int j = 0; j < MAX_COMP_SEGMENTS; j++){
         barrier_var(j); // keep clang from changing it
         if(j >= n_seg || j >= sizeof(sfc->segments)) break;
-        if((void *)((struct in6_addr *)new_segs + j + 1) > end) return -1;
-        
+        if((void *)((struct in6_addr *)new_segs + j + 1) > end){
+            bpf_spin_unlock(&sfc->lock);
+            return -1;
+        }
         const __u64 *a = (const __u64 *)(new_segs + j);
         const __u64 *b = (const __u64 *)(&sfc->segments[j]);
         if (a[0] != b[0] || a[1] != b[1]) { (*equal) = 1; break; }
     }
+    bpf_spin_unlock(&sfc->lock);
     return 0;
 }
 
@@ -175,7 +188,6 @@ int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *rx_time, __u32 *l
     __u64 oldest_time = 1ULL << 63; // initialize to max of allowed distance between two packets
     struct sfc_t *oldest_sfc = NULL;
 
-    // proof length of new_segs
     __u32 NEW_SEG_LEN = n_seg;
     if(NEW_SEG_LEN < 1 || NEW_SEG_LEN > MAX_SEGMENTS)
         return -1;
@@ -192,10 +204,8 @@ int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *rx_time, __u32 *l
             return -1;
     
         if(sfc->last_seen == 0){ // means lane was not assigned yet and is free
-            if(update_lane_cache(new_segs, n_seg, sfc, end) < 0)
+            if(update_lane_cache(new_segs, n_seg, sfc, rx_time, end) < 0)
                 return -1;
-            sfc->n_segs = n_seg;
-            sfc->last_seen = *rx_time;
             *(lane) = i;
             return 0;
         }
@@ -222,8 +232,10 @@ int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *rx_time, __u32 *l
         }
 
         if (equal == 0) {
+            bpf_spin_lock(&sfc->lock);
             sfc->n_segs = n_seg;
             sfc->last_seen = *rx_time;
+            bpf_spin_unlock(&sfc->lock);
 
             *(lane) = i;
             return 0;
@@ -235,11 +247,8 @@ int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *rx_time, __u32 *l
 
     // if no stored srh matches and no lane is free -> new sfc -> evict oldest lane
 
-    if(update_lane_cache(new_segs, n_seg, oldest_sfc, end) < 0)
+    if(update_lane_cache(new_segs, n_seg, oldest_sfc, rx_time, end) < 0)
         return -1;
-
-    oldest_sfc->last_seen = *rx_time;
-    oldest_sfc->n_segs = n_seg;
     *(lane) = oldest_lane;
     return 0;
 }
