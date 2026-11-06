@@ -19,7 +19,7 @@ from scapy.all import Ether, Raw, IPv6, IP, IPv6ExtHdrSegmentRouting, UDP, Async
 
 app = App()
 
-INTER_PACKET_TIMEOUT = 0.01
+INTER_PACKET_TIMEOUT = 0.001
 CAPTURE_STARTUP_TIMEOUT = 0.5
 RECEIVE_TIMEOUT = 1
 
@@ -71,12 +71,12 @@ def benchmark(
     run_bench(n, send_iface, receive_iface, srv6, inner_v4, first_hop_mac, scenario)
 
     results = [int((rx_times[s] - tx_times[s]) * 1e9) for s in rx_times if s in tx_times]
-    misclassified = [rx_tags[s] != tx_tags[s] for s in rx_tags if s in tx_tags]
+    misclassified = [1 for s in rx_tags if (s in tx_tags and rx_tags[s] != tx_tags[s])]
 
     report_results(results, misclassified)
 
     if not test:
-        store_results(results, n, srv6, log_string)
+        store_results(results, n, srv6, log_string, scenario)
 
     print(f"Successfully benchmarked with {n} packets ({send_iface} --> {receive_iface}, srv6: {srv6})")
 
@@ -96,7 +96,7 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool
     recv_filter = "inbound and ip6 proto 43" if srv6 else "inbound and ip6 proto 17"
 
     s = scenario_lib[scenario]
-    print("scenario ", s)
+    
     length = len(s)
 
     send_sniffer = AsyncSniffer(
@@ -137,8 +137,6 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool
             return_sniffer.stop()
         print("rx packets: ", len(rx_times))
         print("tx packets: ", len(tx_times))
-        print("tags (rx): ", rx_tags)
-        print("tags (tx): ", tx_tags)
 
 def packet_received(pkt):
     if Raw not in pkt:
@@ -157,7 +155,7 @@ def packet_outbound(pkt):
     tx_tags[seq] = srh.tag if srh else None
 
 
-def store_results(results, n, srv6, log_string):
+def store_results(results, n, srv6, log_string, scenario):
     if not results:
         print("No results to store.")
         return
@@ -168,7 +166,7 @@ def store_results(results, n, srv6, log_string):
 
     os.makedirs("results", exist_ok=True)
 
-    file_path = f"results/{kind}_{infix}{n}_{t}.csv"
+    file_path = f"results/{kind}_{infix}_{scenario}_{n}_{t}.csv"
     with open(file_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["rtt_ns"])
