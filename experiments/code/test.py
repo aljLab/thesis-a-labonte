@@ -12,6 +12,7 @@ import statistics
 import os
 from cyclopts import App
 from functools import partial
+from scenarios.packets import scenario_lib
 
 from scapy.all import Ether, Raw, IPv6, IP, IPv6ExtHdrSegmentRouting, UDP, AsyncSniffer, sendp
 
@@ -25,21 +26,21 @@ RECEIVE_TIMEOUT = 1
 BOGUS_MAC = "02:00:00:00:00:02"
 SEGMENT_LIST = ["2001:db8:3::1","2001:db8:2::1"]
 
-lock = threading.Lock()
-received = threading.Event()
 
 tx_times, rx_times = {}, {}
+tx_tags, rx_tags = {}, {}
 
 @app.command
 def benchmark(
-    n=10000, 
+    n=10, 
     send_iface = None,
     receive_iface = None,
     srv6 = False,
     log_string = "",
     inner_v4 = False,
     first_hop_mac = "",
-    test = False
+    test = False,
+    scenario = "default"
     ):
     ''' Benchmark a proxy solution by sending packets through it using scapy.
         Args:   
@@ -51,19 +52,28 @@ def benchmark(
             inner_v4 (bool): flag indicating whether or not to use IPv4 for the inner packet (default: IPv6)
             first_hop_mac (string): The mac adress of the first hop to construct correct ethernet frames.
             test (bool): Flag indicating whether or not to persist run data (if --test=true nothing is stored, default: false).
+            scenario (str): test scenario to run. Naming schema <srv6|empty>-<ipv4|ipv6>-<#sfc>.
     '''
     if not send_iface:
         print("sending interface is required. Usage: uv run test.py benchmark --send-iface 'eth0'")
         return
     
+    if scenario not in scenario_lib:
+        print(f"Unknown scenario: {scenario}.")
+        print(f"These are available:")
+        for s in scenario_lib:
+            print(f"- {s}")
+        return
+    
     if not receive_iface:
         receive_iface = send_iface
 
-    run_bench(n, send_iface, receive_iface, srv6, inner_v4, first_hop_mac)
+    run_bench(n, send_iface, receive_iface, srv6, inner_v4, first_hop_mac, scneario)
 
     results = [int((rx_times[s] - tx_times[s]) * 1e9) for s in rx_times if s in tx_times]
+    misclassified = [rx_tags[s] == tx_tags[s] for s in rx_tags if s in tx_tags]
 
-    report_results(results)
+    report_results(results, misclassified)
 
     if not test:
         store_results(results, n, srv6, log_string)
@@ -71,7 +81,7 @@ def benchmark(
     print(f"Successfully benchmarked with {n} packets ({send_iface} --> {receive_iface}, srv6: {srv6})")
 
 
-def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool, first_hop_mac:str):
+def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool, first_hop_mac:str, scenario:str):
 
     src_mac = netifaces.ifaddresses(send_iface)[netifaces.AF_LINK][0]["addr"]
     if first_hop_mac != "":
@@ -79,11 +89,14 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool
     else:
         dst_mac = netifaces.ifaddresses(receive_iface)[netifaces.AF_LINK][0]["addr"]
 
-    send_handler = partial(packet_outbound, lock=lock)
-    recv_handler = partial(packet_received, lock=lock)
+    send_handler = partial(packet_outbound)
+    recv_handler = partial(packet_received)
 
     send_filter = "outbound and ip6 proto 43" if srv6 else "outbound and ip6 proto 17"
     recv_filter = "inbound and ip6 proto 43" if srv6 else "inbound and ip6 proto 17"
+
+    s = scenario_lib[scenario]
+    length = len(s)
 
     send_sniffer = AsyncSniffer(
         iface=send_iface,
@@ -105,36 +118,14 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool
 
     try:
         for seq in range(n):
+            pkt = s[n%length]
             payload = seq.to_bytes(8, "little")
+            tag=seq & 0xFFFF
+            pkt[Ether].src=src_mac
+            pkt[Ether].dst=dst_mac
+            pkt[Raw].payload=payload
+            pkt[IPv6ExtHdrSegmentRouting].tag=tag
 
-            if srv6:
-                # assuming that send_iface == recv_iface for proxy testing
-                if inner_v4:
-                    pkt = (
-                        Ether(src=BOGUS_MAC.lower(), dst=dst_mac) / 
-                        IPv6(src="2001:db8:1::1", dst="2001:db8:2::1") / 
-                        IPv6ExtHdrSegmentRouting(addresses=SEGMENT_LIST, segleft=len(SEGMENT_LIST)-1, lastentry=len(SEGMENT_LIST)-1) / 
-                        IP(src="10.0.0.1", dst="10.0.0.2") / 
-                        UDP(sport=12345, dport=12346) / 
-                        Raw(load=payload)
-                    )
-                else:
-                    pkt = (
-                        Ether(src=BOGUS_MAC.lower(), dst=dst_mac) / 
-                        IPv6(src="2001:db8:1::1", dst="2001:db8:2::1") / 
-                        IPv6ExtHdrSegmentRouting(addresses=SEGMENT_LIST, segleft=len(SEGMENT_LIST)-1, lastentry=len(SEGMENT_LIST)-1) / 
-                        IPv6(src="fd00::1", dst="fd00::2") / 
-                        UDP(sport=12345, dport=12346) / 
-                        Raw(load=payload)
-                    )
-            else:
-                pkt = (
-                    Ether(src=src_mac, dst=dst_mac) /
-                    IPv6(src="fd00::1", dst="fd00::2") /
-                    UDP(sport=12345, dport=12346) /
-                    Raw(load=payload)
-                )
-            
             sendp(pkt, iface=send_iface, verbose=False)
 
             time.sleep(INTER_PACKET_TIMEOUT)
@@ -147,22 +138,24 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool
         print("rx packets: ", len(rx_times))
         print("tx packets: ", len(tx_times))
 
-def packet_received(pkt, lock):
+def packet_received(pkt):
     if Raw not in pkt: return
     
     seq = int.from_bytes(pkt[Raw].load[:8], "little")
+    tag = int.from_bytes(pkt[IPv6ExtHdrSegmentRouting].tag)
 
-    with lock:
-        rx_times[seq] = float(pkt.time)
+    rx_times[seq] = float(pkt.time)
+    rx_tags[seq] = tag
 
 
-def packet_outbound(pkt, lock):
+def packet_outbound(pkt):
     if Raw not in pkt: return
     
     seq = int.from_bytes(pkt[Raw].load[:8], "little")
+    tag = int.from_bytes(pkt[IPv6ExtHdrSegmentRouting].tag)
 
-    with lock:
-        tx_times[seq] = float(pkt.time)
+    tx_times[seq] = float(pkt.time)
+    tx_tags[seq] = tag
 
 
 def store_results(results, n, srv6, log_string):
@@ -183,7 +176,7 @@ def store_results(results, n, srv6, log_string):
         writer.writerows([r] for r in results)
 
 
-def report_results(results):
+def report_results(results, misclassified):
     if not results:
         print("No results to report.")
         return
@@ -195,6 +188,12 @@ def report_results(results):
     print(f"Received:         {len(results)}")
     print(f"Average(µs):  {statistics.mean(us):.8f}")
     print("------------------------")
+
+    if not misclassified:
+        print("No misclassified packets.")
+        return
+    
+    print(f"{len(misclassified)} packets were misclassified.")
 
 if __name__ == "__main__":
     app()
