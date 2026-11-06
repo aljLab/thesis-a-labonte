@@ -129,7 +129,7 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool
             pkt[IPv6ExtHdrSegmentRouting].tag=seq & 0xFFFF
 
             sendp(pkt, iface=send_iface, verbose=False)
-            print("seq=", seq, " tag=", tag)
+            print("seq=", seq, " tag=", seq & 0xFFFF)
             time.sleep(inter_pkt_timeout)
     finally:
         time.sleep(RECEIVE_TIMEOUT)
