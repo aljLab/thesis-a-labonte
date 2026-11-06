@@ -68,7 +68,7 @@ def benchmark(
     if not receive_iface:
         receive_iface = send_iface
 
-    run_bench(n, send_iface, receive_iface, srv6, inner_v4, first_hop_mac, scneario)
+    run_bench(n, send_iface, receive_iface, srv6, inner_v4, first_hop_mac, scenario)
 
     results = [int((rx_times[s] - tx_times[s]) * 1e9) for s in rx_times if s in tx_times]
     misclassified = [rx_tags[s] == tx_tags[s] for s in rx_tags if s in tx_tags]
