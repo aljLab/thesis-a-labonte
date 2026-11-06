@@ -230,38 +230,31 @@ func runCorrelationBasedProxy(){
 
     fmt.Println("Succesfully attached prog to dispatch interface")
 
-    /* var encapCollections []*ebpf.Collection
-    defer func() {
-        for _, c := range encapCollections {
-            c.Close()
-        }
-    }()
-    
-    for j, iface := range macIndexMappings {
-        if(j >= n && j < 2*n){
-            prog := base.Programs["encap"]
-            if prog == nil {
-                log.Fatal("encap program missing")
-            }
+    /*
+    * ENCAP
+    */
 
-            l, err := link.AttachXDP(link.XDPOptions{
-                Program:   prog,
-                Interface: int(iface.LinkIndex),
-            })
+    encapIface := macIndexMappings[1] // with n = 1, 
 
-            var ve *ebpf.VerifierError
-            if errors.As(err, &ve) {
-                fmt.Printf("Verifier log (%d lines):\n", len(ve.Log))
-                fmt.Println(strings.Join(ve.Log, "\n"))
-            } else {
-                if err != nil {
-                    log.Fatalf("attach encap to %d: %v", iface.LinkIndex, err)
-                }
-            }
-            fmt.Printf("Succesfully attached prog to fromVNF interface %d\n", j)
-            links = append(links, l)
+    encapProg := base.Programs["proxy_egress"]
+    if encapProg == nil {
+        log.Fatalf("Did not find encap program.")
+    }
+
+    l, err := link.AttachXDP(link.XDPOptions{
+        Program:   encapProg,
+        Interface: int(encapIface.LinkIndex),
+    })
+
+    links = append(links, l)
+    if errors.As(err, &ve) {
+        fmt.Printf("Verifier log (%d lines):\n", len(ve.Log))
+        fmt.Println(strings.Join(ve.Log, "\n"))
+    } else {
+        if err != nil {
+            log.Fatalf("attach encap to %d: %v", encapIface.LinkIndex, err)
         }
-    } */
+    }
 
     fmt.Printf(
         "decap attached to ifaceIndex %d; shared maps initialized for %d lanes\n",

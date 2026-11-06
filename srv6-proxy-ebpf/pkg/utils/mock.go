@@ -56,14 +56,6 @@ var MockIPv4ImmutableHdrFields = []ImmutableHeaderField{
 			BitMask: "0xffffff00",
 		},
 	},
-	{
-		Proto: PROTO_IPv4,
-		Field: IPv4_ECN,
-		Match: MatchType{
-			Type: BITMASK_MATCH,
-			BitMask: "0xff",
-		},
-	},
 }
 
 var MockIPv6ImmutableHdrFields = []ImmutableHeaderField{
