@@ -677,6 +677,8 @@ int proxy_egress(struct xdp_md *ctx)
         return XDP_DROP;
     }
 
+    bpf_printk("Egress: l4_proto %u, version %u", l4_proto, inner_l3_version);
+
     if(l4_proto != IPPROTO_TCP && l4_proto != IPPROTO_UDP){
         if(l4_proto == 43)
             bpf_printk("Weird 43 err happened again, not decapsulating?");
@@ -926,6 +928,8 @@ int decap(struct xdp_md *ctx)
 
     if(update_eth_hdr(start, end) < 0)
         return XDP_DROP;
+    
+    bpf_printk("Ingress: srh_len: %u, outer_len: %u", p->srh_len, p->outer_len);
 
     // fetch linkIndex of outgoing lane interface
     __u32 link_key = 0;
