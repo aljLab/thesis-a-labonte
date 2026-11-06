@@ -566,7 +566,6 @@ XDP PROGRAMS
 SEC("xdp")
 int proxy_ingress(struct xdp_md *ctx)
 {
-    bpf_printk("entered proxy ingress program (correlation-based)");
     if(bpf_xdp_adjust_meta(ctx, -(int)sizeof(struct key_meta)) < 0)
         return XDP_ABORTED;
     
@@ -583,7 +582,6 @@ int proxy_ingress(struct xdp_md *ctx)
     struct parsed_srh p;
     if(parse_srh(&p, start, end) < 0)
         return XDP_DROP;
-    bpf_printk("Parsed srh...");
     __u32 inner_l3_version = -1;
     __u32 l3_len = -1;
     __u32 l4_proto = -1; // should be 6 (TCP) or 17 (UDP)
@@ -593,15 +591,15 @@ int proxy_ingress(struct xdp_md *ctx)
         return XDP_DROP;
 
     if(l4_proto != IPPROTO_TCP && l4_proto != IPPROTO_UDP)
+        if(l4_proto == 43)
+            bpf_printk("Weird 43 err happened again, not decapsulating?");
         return XDP_ABORTED;
 
-    bpf_printk("Parsed inner L3 packet with version %u and next_proto %u...", inner_l3_version, l4_proto);
     struct l3_mask_t *l3_mask = bpf_map_lookup_elem(&mask_table_l3, &inner_l3_version);
 
     if(!l3_mask)
         return XDP_DROP;
 
-    bpf_printk("Masking key with L3 Mask...");
     // write masked value directly into key->l3 (in data-meta)
     __u8 *inner_hdr;
     switch (inner_l3_version)
@@ -661,7 +659,6 @@ int proxy_ingress(struct xdp_md *ctx)
 SEC("xdp")
 int proxy_egress(struct xdp_md *ctx)
 {
-    bpf_printk("Entered proxy egress;");
     void *start = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
     
@@ -679,11 +676,10 @@ int proxy_egress(struct xdp_md *ctx)
         bpf_printk("Dropped in parse_inner_l3...");
         return XDP_DROP;
     }
-    bpf_printk("Parsed inner l3..., with proto %u", l4_proto);
+
     if(l4_proto != IPPROTO_TCP && l4_proto != IPPROTO_UDP)
         return XDP_ABORTED;
 
-    bpf_printk("Looking up mask...");
     struct l3_mask_t *l3_mask = bpf_map_lookup_elem(&mask_table_l3, &inner_l3_version);
 
     if(!l3_mask)
@@ -703,13 +699,12 @@ int proxy_egress(struct xdp_md *ctx)
         return -1;
         break;
     }
-    bpf_printk("Ensuring inner header...");
+
     if (!inner_hdr)
         return XDP_DROP;
     
     struct srh_key key = {0};
     
-    bpf_printk("masking key l3...");
     if(mask_hdr(inner_hdr, (__u8 *)l3_mask->bytes, l3_len, (__u8 *)key.l3, end) < 0){
         return XDP_DROP;
     }
@@ -726,7 +721,7 @@ int proxy_egress(struct xdp_md *ctx)
     struct l4_mask_t *l4_mask = bpf_map_lookup_elem(&mask_table_l4, &l4_proto);
     if(!l4_mask)
         return XDP_DROP;
-    bpf_printk("masking key l4...");
+
     if(mask_hdr((__u8 *)start_l4, (__u8 *)l4_mask->bytes, l4_key_size, (__u8 *)key.l4, end) < 0)
         return XDP_DROP;
     
@@ -777,7 +772,6 @@ int proxy_egress(struct xdp_md *ctx)
     if(!link_index)
         return XDP_DROP;
 
-    bpf_printk("Leaving egress on %u", *link_index);
     return bpf_redirect(*link_index, 0);
 }
 
@@ -809,7 +803,6 @@ int tcp_in_ip4(struct xdp_md *ctx)
 SEC("xdp")
 int udp_in_ip4(struct xdp_md *ctx)
 {
-    bpf_printk("Entered udp_in_ip4...");
     void *start = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
     void *meta = (void *)(long)ctx->data_meta;
@@ -860,7 +853,6 @@ int tcp_in_ip6(struct xdp_md *ctx)
 SEC("xdp")
 int udp_in_ip6(struct xdp_md *ctx)
 {
-    bpf_printk("Entered udp_in_ip6...");
     void *start = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
     void *meta = (void *)(long)ctx->data_meta;
@@ -922,7 +914,6 @@ int decap(struct xdp_md *ctx)
     if(cp_ethhdr_in_front_of_inner(p))
     // get dst/src mac addresses update eth header h_proto in packet
 
-    bpf_printk("Adjusting head with delta %u", p->outer_len);
     if(bpf_xdp_adjust_head(ctx, p->outer_len) < 0)
         return XDP_DROP;
 
@@ -932,8 +923,6 @@ int decap(struct xdp_md *ctx)
 
     if(update_eth_hdr(start, end) < 0)
         return XDP_DROP;
-    
-    bpf_printk("Ingress: srh_len=%u, outer_len=%u", p->srh_len, p->outer_len);
 
     // fetch linkIndex of outgoing lane interface
     __u32 link_key = 0;
@@ -941,7 +930,6 @@ int decap(struct xdp_md *ctx)
     
     if(!link_index || !*link_index)
         return XDP_DROP;
-    bpf_printk("Sending decapsulated packet out of iface with index: %u", *link_index);
     return bpf_redirect(*link_index, 0);
 }
 
