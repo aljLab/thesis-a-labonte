@@ -71,9 +71,7 @@ def benchmark(
     run_bench(n, send_iface, receive_iface, srv6, inner_v4, first_hop_mac, scenario)
 
     results = [int((rx_times[s] - tx_times[s]) * 1e9) for s in rx_times if s in tx_times]
-    misclassified = [rx_tags[s] == tx_tags[s] for s in rx_tags if s in tx_tags]
-
-    print("misclassified", misclassified)
+    misclassified = [rx_tags[s] != tx_tags[s] for s in rx_tags if s in tx_tags]
 
     report_results(results, misclassified)
 
@@ -98,6 +96,7 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool
     recv_filter = "inbound and ip6 proto 43" if srv6 else "inbound and ip6 proto 17"
 
     s = scenario_lib[scenario]
+    print("scenario ", s)
     length = len(s)
 
     send_sniffer = AsyncSniffer(
@@ -120,7 +119,7 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool
 
     try:
         for seq in range(n):
-            pkt = s[n%length]
+            pkt = s[seq%length]
             payload = seq.to_bytes(8, "little")
             pkt[Ether].src=src_mac
             pkt[Ether].dst=dst_mac
