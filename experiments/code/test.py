@@ -138,23 +138,20 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool
         print("tx packets: ", len(tx_times))
 
 def packet_received(pkt):
-    if Raw not in pkt: return
-    
+    if Raw not in pkt:
+        return
     seq = int.from_bytes(pkt[Raw].load[:8], "little")
-    tag = int.from_bytes(pkt[IPv6ExtHdrSegmentRouting].tag)
-
     rx_times[seq] = float(pkt.time)
-    rx_tags[seq] = tag
-
+    srh = pkt.getlayer(IPv6ExtHdrSegmentRouting)
+    rx_tags[seq] = srh.tag if srh else None
 
 def packet_outbound(pkt):
-    if Raw not in pkt: return
-    
+    if Raw not in pkt:
+        return
     seq = int.from_bytes(pkt[Raw].load[:8], "little")
-    tag = int.from_bytes(pkt[IPv6ExtHdrSegmentRouting].tag)
-
     tx_times[seq] = float(pkt.time)
-    tx_tags[seq] = tag
+    srh = pkt.getlayer(IPv6ExtHdrSegmentRouting)
+    tx_tags[seq] = srh.tag if srh else None
 
 
 def store_results(results, n, srv6, log_string):
