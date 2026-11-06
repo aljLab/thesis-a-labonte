@@ -6,12 +6,12 @@ SEGMENT_LIST_SFC1 = ["2001:db8:3::1","2001:db8:2::1"]
 SEGMENT_LIST_SFC2 = ["2001:db8:3::1","2001:db8:2::1", "2001:db8:4::1"]
 SEGMENT_LIST_SFC3 = ["2001:db8:5::1","2001:db8:6::1", "2001:db8:4::1"]
 SEGMENT_LIST_SFC4 = ["2001:db8:5::1","2001:db8:6::1", "2001:db8:8::1"]
-SEGMENT_LIST_SFC5 = ["2001:db8:9::1"]
+SEGMENT_LIST_SFC5 = ["2001:db8:9::1", "2001:db8:9::2"]
 SEGMENT_LIST_SFC6 = ["2001:db8:3::1","2001:db8:2::1"]
-SEGMENT_LIST_SFC7 = ["2001:db8:3::1","2001:db8:2::1", "2001:db8:4::1"]
-SEGMENT_LIST_SFC8 = ["2001:db8:5::1","2001:db8:6::1", "2001:db8:4::1"]
-SEGMENT_LIST_SFC9 = ["2001:db8:5::1","2001:db8:6::1", "2001:db8:8::1"]
-SEGMENT_LIST_SFC10 = ["2001:db8:9::1"]
+SEGMENT_LIST_SFC7 = ["2001:db8:3::1","2001:db8:2::1", "2001:db8:4::2"]
+SEGMENT_LIST_SFC8 = ["2001:db8:5::1","2001:db8:6::1", "2001:db8:4::2"]
+SEGMENT_LIST_SFC9 = ["2001:db8:5::1","2001:db8:6::1", "2001:db8:8::2"]
+SEGMENT_LIST_SFC10 = ["2001:db8:9::1", "2001:db8:9::2"]
 
 payload = ""
 
