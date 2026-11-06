@@ -120,11 +120,10 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool
         for seq in range(n):
             pkt = s[n%length]
             payload = seq.to_bytes(8, "little")
-            tag=seq & 0xFFFF
             pkt[Ether].src=src_mac
             pkt[Ether].dst=dst_mac
-            pkt[Raw].payload=payload
-            pkt[IPv6ExtHdrSegmentRouting].tag=tag
+            pkt[Raw].load=payload
+            pkt[IPv6ExtHdrSegmentRouting].tag=seq & 0xFFFF
 
             sendp(pkt, iface=send_iface, verbose=False)
 
