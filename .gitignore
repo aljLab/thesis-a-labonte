@@ -8,3 +8,8 @@ dpl
 rendered/
 
 try_out/
+
+
+__pycache__/
+
+archive/
