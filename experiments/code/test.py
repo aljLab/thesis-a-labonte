@@ -35,7 +35,7 @@ def benchmark(
     n=10, 
     send_iface = None,
     receive_iface = None,
-    srv6 = False,
+    srv6 = True,
     log_string = "",
     inner_v4 = False,
     first_hop_mac = "",
@@ -73,7 +73,9 @@ def benchmark(
     run_bench(n, send_iface, receive_iface, srv6, inner_v4, first_hop_mac, scenario, inter_pkt_timeout)
 
     results = [int((rx_times[s] - tx_times[s]) * 1e9) for s in rx_times if s in tx_times]
-    misclassified = [1 for s in rx_tags if (s in tx_tags and rx_tags[s] != tx_tags[s])]
+    misclassified = 0
+    for i in range(len(rx_tags)):
+        misclassified += abs(rx_tags[i] - tx_tags[i])
 
     report_results(results, misclassified)
 
@@ -126,10 +128,9 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool
             pkt[Ether].src=src_mac
             pkt[Ether].dst=dst_mac
             pkt[Raw].load=payload
-            pkt[IPv6ExtHdrSegmentRouting].tag=seq & 0xFFFF
+            pkt[IPv6ExtHdrSegmentRouting].tag=(seq%length) & 0xFFFF # the sfc
 
             sendp(pkt, iface=send_iface, verbose=False)
-            print("seq=", seq, " tag=", seq & 0xFFFF)
             time.sleep(inter_pkt_timeout)
     finally:
         time.sleep(RECEIVE_TIMEOUT)
@@ -146,7 +147,11 @@ def packet_received(pkt):
     seq = int.from_bytes(pkt[Raw].load[:8], "little")
     rx_times[seq] = float(pkt.time)
     srh = pkt.getlayer(IPv6ExtHdrSegmentRouting)
-    rx_tags[seq] = srh.tag if srh else None
+    rx_tags[srh.tag] = rx_tags[srh.tag] + 1 if srh else None
+    if srh and srh.tag in rx_tags:
+        rx_tags[shr.tag] += 1
+    else:
+        rx_tags[shr.tag] = 1
 
 def packet_outbound(pkt):
     if Raw not in pkt:
@@ -154,7 +159,10 @@ def packet_outbound(pkt):
     seq = int.from_bytes(pkt[Raw].load[:8], "little")
     tx_times[seq] = float(pkt.time)
     srh = pkt.getlayer(IPv6ExtHdrSegmentRouting)
-    tx_tags[seq] = srh.tag if srh else None
+    if srh and srh.tag in tx_tags:
+        tx_tags[shr.tag] += 1
+    else:
+        tx_tags[shr.tag] = 1
 
 
 def store_results(results, n, srv6, log_string, scenario):
@@ -192,7 +200,7 @@ def report_results(results, misclassified):
         print("No misclassified packets.")
         return
     
-    print(f"{len(misclassified)} packets were misclassified.")
+    print(f"{misclassified} packets were misclassified.")
 
 if __name__ == "__main__":
     app()
