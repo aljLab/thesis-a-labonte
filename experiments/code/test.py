@@ -149,9 +149,9 @@ def packet_received(pkt):
     srh = pkt.getlayer(IPv6ExtHdrSegmentRouting)
     rx_tags[srh.tag] = rx_tags[srh.tag] + 1 if srh else None
     if srh and srh.tag in rx_tags:
-        rx_tags[shr.tag] += 1
+        rx_tags[srh.tag] += 1
     else:
-        rx_tags[shr.tag] = 1
+        rx_tags[srh.tag] = 1
 
 def packet_outbound(pkt):
     if Raw not in pkt:
@@ -160,9 +160,9 @@ def packet_outbound(pkt):
     tx_times[seq] = float(pkt.time)
     srh = pkt.getlayer(IPv6ExtHdrSegmentRouting)
     if srh and srh.tag in tx_tags:
-        tx_tags[shr.tag] += 1
+        tx_tags[srh.tag] += 1
     else:
-        tx_tags[shr.tag] = 1
+        tx_tags[srh.tag] = 1
 
 
 def store_results(results, n, srv6, log_string, scenario):
