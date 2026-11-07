@@ -76,7 +76,8 @@ def benchmark(
     results = [int((rx_times[s] - tx_times[s]) * 1e9) for s in rx_times if s in tx_times]
     misclassified = 0
     for i in range(len(rx_tags)):
-        misclassified += abs(rx_tags[i] - tx_tags[i])
+        if i in rx_tags and i in tx_tags:
+            misclassified += abs(rx_tags[i] - tx_tags[i])
 
     report_results(results, misclassified)
 
