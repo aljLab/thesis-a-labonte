@@ -29,7 +29,9 @@ CONSTANTS
 #define MAX_SRH_KEY_LEN MAX_L3_HDR_BYTES + MAX_L4_HDR_BYTES
 #define MAX_SRH_CACHE_ENTRIES 128
 #define MAX_L3_L4_COMBINATIONS 4 // #supported_l3_protos * #supported_l4_protos
-#define MAX_FIXED_HDR_LEN 40 // max(MAX_L3_HDR_BYTES, MAX_L4_HDR_BYTES)
+#define MAX_FIXED_HDR_LEN_GLOBAL 40 // max(MAX_L3_HDR_BYTES, MAX_L4_HDR_BYTES)
+#define L3_KEY_SIZE MAX_L3_HDR_BYTES
+#define L4_KEY_SIZE MAX_L4_HDR_BYTES
 
 /*
 STRUCTS
@@ -125,8 +127,8 @@ struct proxy_meta {
 } __attribute__((aligned(4)));
 
 struct srh_key {
-    __u8 l3[MAX_L3_HDR_BYTES];
-    __u8 l4[MAX_L4_HDR_BYTES];
+    __u8 l3[L3_KEY_SIZE];
+    __u8 l4[L4_KEY_SIZE];
 };
 
 struct l3_mask_t {
@@ -140,11 +142,6 @@ struct inner_l3_hdr {
     struct ipv6hdr *ip6;
     struct iphdr *ip4;
 };
-
-/* struct inner_l4_hdr {
-    struct tcphdr *tcp;
-    struct udphdr *udp;
-}; */
 
 struct key_meta {
     struct srh_key key;

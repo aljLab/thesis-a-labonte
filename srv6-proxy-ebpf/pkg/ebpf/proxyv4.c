@@ -68,45 +68,9 @@ struct {
 FUNCTIONS
 */
 
-static __always_inline
-int parse_srh(struct parsed_srh *p, void *start, void *end)
-{
-    p->eth = start;
-    if((void *)(p->eth + 1) > end)
-        return -1;
-
-    p->ip6 = (void *)(p->eth + 1);
-    if((void *)(p->ip6 + 1) > end)
-        return -1;
-
-    p->srh = (void *)(p->ip6 + 1);
-    // check for fixed len routing header first [ NextHeader | HdrExtLen | RoutingType | SegmentsLeft ]
-    if((void *)((char *)p->srh + 8) > end)  
-        return -1;
-
-    __u8 hdr_ext_len = p->srh->hdrlen;
-    __u8 last_index = p->srh->first_segment;
-
-    p->srh_len = RH_SIZE + hdr_ext_len * 8;
-    if(p->srh_len > MAX_SRH_LEN)
-        return -1;
-
-    if((void *)((char *)p->srh + p->srh_len) > end)
-        return -1;
-    
-    p->outer_len = sizeof(struct ipv6hdr) + p->srh_len;
-    if((void *)((char *)p->ip6 + p->outer_len) > end)
-        return -1;
-
-    if((void *)((char *)p->srh->segments + (p->srh_len - 8)) > end)
-        return -1;
-    
-    p->n_segs = (__u32)last_index + 1; //number of segments in segments list
-    
-    return 0;
-}
-
-
+/*
+* PER L3/L4 PARSING COMBINATION FUNCTIONS
+*/
 static __always_inline
 int parse_pkt_tcp_ip4(struct pkt_tcp_ip4 *p, void *start, void *end)
 {
@@ -253,6 +217,47 @@ int parse_pkt_udp_ip6(struct pkt_udp_ip6 *p, void *start, void *end)
 }
 
 
+/*
+* DECAP FUNCTIONS
+*/
+static __always_inline
+int parse_srh(struct parsed_srh *p, void *start, void *end)
+{
+    p->eth = start;
+    if((void *)(p->eth + 1) > end)
+        return -1;
+
+    p->ip6 = (void *)(p->eth + 1);
+    if((void *)(p->ip6 + 1) > end)
+        return -1;
+
+    p->srh = (void *)(p->ip6 + 1);
+    // check for fixed len routing header first [ NextHeader | HdrExtLen | RoutingType | SegmentsLeft ]
+    if((void *)((char *)p->srh + 8) > end)  
+        return -1;
+
+    __u8 hdr_ext_len = p->srh->hdrlen;
+    __u8 last_index = p->srh->first_segment;
+
+    p->srh_len = RH_SIZE + hdr_ext_len * 8;
+    if(p->srh_len > MAX_SRH_LEN)
+        return -1;
+
+    if((void *)((char *)p->srh + p->srh_len) > end)
+        return -1;
+    
+    p->outer_len = sizeof(struct ipv6hdr) + p->srh_len;
+    if((void *)((char *)p->ip6 + p->outer_len) > end)
+        return -1;
+
+    if((void *)((char *)p->srh->segments + (p->srh_len - 8)) > end)
+        return -1;
+    
+    p->n_segs = (__u32)last_index + 1; //number of segments in segments list
+    
+    return 0;
+}
+
 static __always_inline
 int parse_inner_ip4(struct iphdr *ip4, __u32 *l3_len, __u32 *l4_proto, void *end)
 {
@@ -278,14 +283,7 @@ int parse_inner_ip6(struct ipv6hdr *ip6, __u32 *l3_len, __u32 *l4_proto, void *e
 }
 
 static __always_inline
-int parse_inner_l3(
-    char *start, 
-    __u32 *inner_l3_version, 
-    __u32 *l3_len, 
-    __u32 *l4_proto, 
-    void *end, 
-    struct inner_l3_hdr *inner
-)
+int parse_inner_l3(char *start, __u32 *inner_l3_version, __u32 *l3_len, __u32 *l4_proto, void *end, struct inner_l3_hdr *inner)
 {
     if((void *)(start + 1) > end){
         return -1;
@@ -313,15 +311,28 @@ int parse_inner_l3(
     return 0;
 }
 
+// mask_hdr masks a header (at *hdr) with a mask (at *mask) and writes the result into a key field (at *key).
+// since key fields are always as big as the biggest header in this layer, mask_hdr writes zeros into the header 
+// to avoid garbage key values, e.g. resulting from reading 40 bytes (max_l4_hdr_size) from a pointer to a UDP header.
 static __always_inline
-int mask_hdr(__u8 *hdr, __u8 *mask, __u32 len, __u8 *dst, void *end)
-{
-    for (__u32 i = 0; i < MAX_FIXED_HDR_LEN; i++) {
-        if (i >= len) break;
-        if ((void *)(hdr + i + 1) > end) {
-            return -1;
+int mask_hdr(__u8 *hdr, __u8 *mask, __u32 len, __u8 *dst, void *end, __u32 key_size)
+{   
+    bpf_printk("Masking header with keysize %u and actual hdr size=%u", key_size, len);
+    if(key_size > MAX_FIXED_HDR_LEN_GLOBAL)
+        key_size = MAX_FIXED_HDR_LEN_GLOBAL;
+
+    for (__u32 i = 0; i < MAX_FIXED_HDR_LEN_GLOBAL; i++) {
+        if (i >= key_size){
+            break;
         }
-        dst[i] = mask[i] & hdr[i];
+        if(i >= len){ // if actual header length < key_size, fill with zeros
+            dst[i] = 0;
+        } else {
+            if ((void *)(hdr + i + 1) > end) {
+                return -1;
+            }
+            dst[i] = mask[i] & hdr[i];
+        }
     }
     return 0;
 }
@@ -618,7 +629,7 @@ int proxy_ingress(struct xdp_md *ctx)
     if (!inner_hdr)
         return XDP_DROP;
 
-    if(mask_hdr(inner_hdr, (__u8 *)l3_mask->bytes, l3_len, (__u8 *)key->l3, end) < 0){
+    if(mask_hdr(inner_hdr, (__u8 *)l3_mask->bytes, l3_len, (__u8 *)key->l3, end, L3_KEY_SIZE) < 0){
         return XDP_DROP;
     }
     // order in main setup: [0]ip4/tcp [1]ip6/tcp [2]ip4/udp [3]ip6/udp
@@ -657,6 +668,7 @@ int proxy_ingress(struct xdp_md *ctx)
 SEC("xdp")
 int proxy_egress(struct xdp_md *ctx)
 {   
+    bpf_printk("Entering Egress");
     void *start = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
     
@@ -702,7 +714,7 @@ int proxy_egress(struct xdp_md *ctx)
     
     struct srh_key key = {0};
     
-    if(mask_hdr(inner_hdr, (__u8 *)l3_mask->bytes, l3_len, (__u8 *)key.l3, end) < 0){
+    if(mask_hdr(inner_hdr, (__u8 *)l3_mask->bytes, l3_len, (__u8 *)key.l3, end, L3_KEY_SIZE) < 0){
         return XDP_DROP;
     }
 
@@ -719,7 +731,7 @@ int proxy_egress(struct xdp_md *ctx)
     if(!l4_mask)
         return XDP_DROP;
 
-    if(mask_hdr((__u8 *)start_l4, (__u8 *)l4_mask->bytes, l4_key_size, (__u8 *)key.l4, end) < 0)
+    if(mask_hdr((__u8 *)start_l4, (__u8 *)l4_mask->bytes, l4_key_size, (__u8 *)key.l4, end, L4_KEY_SIZE) < 0)
         return XDP_DROP;
     
     // from v3
@@ -767,6 +779,7 @@ int proxy_egress(struct xdp_md *ctx)
     __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &link_index_key);
     if(!link_index)
         return XDP_DROP;
+    bpf_printk("Leaving Egress");
     return bpf_redirect(*link_index, 0);
 }
 
@@ -788,7 +801,7 @@ int tcp_in_ip4(struct xdp_md *ctx)
     if(!l4_mask)
         return XDP_DROP;
 
-    if(mask_hdr((__u8 *)pkt.tcp, (__u8 *)l4_mask->bytes, sizeof(struct tcphdr), (__u8 *)key->l4, end) < 0)
+    if(mask_hdr((__u8 *)pkt.tcp, (__u8 *)l4_mask->bytes, sizeof(struct tcphdr), (__u8 *)key->l4, end, L4_KEY_SIZE) < 0)
         return XDP_DROP;
     
     bpf_tail_call(ctx, &progs, MAX_L3_L4_COMBINATIONS);
@@ -798,6 +811,7 @@ int tcp_in_ip4(struct xdp_md *ctx)
 SEC("xdp")
 int udp_in_ip4(struct xdp_md *ctx)
 {
+    bpf_printk("Entered udp_in_ip4...");
     void *start = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
     void *meta = (void *)(long)ctx->data_meta;
@@ -813,7 +827,7 @@ int udp_in_ip4(struct xdp_md *ctx)
     if(!l4_mask)
         return XDP_DROP;
 
-    if(mask_hdr((__u8 *)pkt.udp, (__u8 *)l4_mask->bytes, sizeof(struct udphdr), (__u8 *)key->l4, end) < 0)
+    if(mask_hdr((__u8 *)pkt.udp, (__u8 *)l4_mask->bytes, sizeof(struct udphdr), (__u8 *)key->l4, end, L4_KEY_SIZE) < 0)
         return XDP_DROP;
     
     bpf_tail_call(ctx, &progs, MAX_L3_L4_COMBINATIONS);
@@ -838,7 +852,7 @@ int tcp_in_ip6(struct xdp_md *ctx)
     if(!l4_mask)
         return XDP_DROP;
 
-    if(mask_hdr((__u8 *)pkt.tcp, (__u8 *)l4_mask->bytes, sizeof(struct tcphdr), (__u8 *)key->l4, end) < 0)
+    if(mask_hdr((__u8 *)pkt.tcp, (__u8 *)l4_mask->bytes, sizeof(struct tcphdr), (__u8 *)key->l4, end, L4_KEY_SIZE) < 0)
         return XDP_DROP;
     
     bpf_tail_call(ctx, &progs, MAX_L3_L4_COMBINATIONS);
@@ -863,7 +877,7 @@ int udp_in_ip6(struct xdp_md *ctx)
     if(!l4_mask)
         return XDP_DROP;
 
-    if(mask_hdr((__u8 *)pkt.udp, (__u8 *)l4_mask->bytes, sizeof(struct udphdr), (__u8 *)key->l4, end) < 0)
+    if(mask_hdr((__u8 *)pkt.udp, (__u8 *)l4_mask->bytes, sizeof(struct udphdr), (__u8 *)key->l4, end, L4_KEY_SIZE) < 0)
         return XDP_DROP;
     
     bpf_tail_call(ctx, &progs, MAX_L3_L4_COMBINATIONS);
@@ -928,6 +942,8 @@ int decap(struct xdp_md *ctx)
     
     if(!link_index || !*link_index)
         return XDP_DROP;
+    
+    bpf_printk("Leaving Ingress");
     return bpf_redirect(*link_index, 0);
 }
 
