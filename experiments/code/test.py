@@ -10,6 +10,7 @@ import csv
 import netifaces
 import statistics
 import os
+import random
 from cyclopts import App
 from functools import partial
 from scenarios.packets import scenario_lib
@@ -123,12 +124,13 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool
 
     try:
         for seq in range(n):
-            pkt = s[seq%length]
+            pick = random.randint(length) # send randomized to minimize chance of systematically wrong encap
+            pkt = s[pick]
             payload = seq.to_bytes(8, "little")
             pkt[Ether].src=src_mac
             pkt[Ether].dst=dst_mac
             pkt[Raw].load=payload
-            pkt[IPv6ExtHdrSegmentRouting].tag=(seq%length) & 0xFFFF # the sfc
+            pkt[IPv6ExtHdrSegmentRouting].tag=(pick) & 0xFFFF # the sfc
 
             sendp(pkt, iface=send_iface, verbose=False)
             time.sleep(inter_pkt_timeout)
