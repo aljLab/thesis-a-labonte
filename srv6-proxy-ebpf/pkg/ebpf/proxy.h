@@ -2,6 +2,7 @@
 #include <linux/if_ether.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
+#include <linux/seg6.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
 #include <linux/in.h>
@@ -28,7 +29,9 @@ CONSTANTS
 #define MAX_L4_HDR_BYTES 20 // max(max_len(udp_hdr), max_len(tcp_hdr))
 #define MAX_SRH_KEY_LEN MAX_L3_HDR_BYTES + MAX_L4_HDR_BYTES
 #define MAX_SRH_CACHE_ENTRIES 128
-#define MAX_L3_L4_COMBINATIONS 4 // #supported_l3_protos * #supported_l4_protos
+#define L3_PROTOCOLS_SUPPORTED 2
+#define L4_PROTOCOLS_SUPPORTED 2
+#define MAX_L3_L4_COMBINATIONS L3_PROTOCOLS_SUPPORTED * L4_PROTOCOLS_SUPPORTED // #supported_l3_protos * #supported_l4_protos
 #define MAX_FIXED_HDR_LEN_GLOBAL 40 // max(MAX_L3_HDR_BYTES, MAX_L4_HDR_BYTES)
 #define L3_KEY_SIZE MAX_L3_HDR_BYTES
 #define L4_KEY_SIZE MAX_L4_HDR_BYTES
@@ -44,34 +47,6 @@ struct cached_outer {
     __u8 bytes[MAX_CACHED_HDR];
 };
 
-struct cached_outer_mock {
-    __u8 bytes[sizeof(struct cached_outer)];
-};
-
-struct mac_entry {
-    __u8 addr[6];
-    __u8 pad[2];
-};
-
-struct sfc_t {
-    struct bpf_spin_lock lock;
-    __u64 last_seen; // monotonic clock value of last encounter of traffic from this service chain
-    struct in6_addr segments[MAX_SEGMENTS];
-    __u32 n_segs;
-};
-
-struct ipv6_sr_hdr {
-	__u8	nexthdr;
-	__u8	hdrlen;
-	__u8	type;
-	__u8	segments_left;
-	__u8	first_segment; /* Represents the last_entry field of SRH */
-	__u8	flags;
-	__u16	tag;
-
-	struct in6_addr segments[];
-};
-
 struct parsed_srh {
     struct ethhdr *eth;
     struct ipv6hdr *ip6;
@@ -82,49 +57,29 @@ struct parsed_srh {
     __u32 n_segs;
 };
 
-struct pkt_tcp_ip4 {
-    struct ethhdr *eth;
-    struct ipv6hdr *ip6;
-    struct ipv6_sr_hdr *srh;
-    struct iphdr *inner_ip4;
-    struct tcphdr *tcp;
-    __u32 srh_len;
+struct mac_entry {
+    __u8 addr[6];
+    __u8 pad[2];
 };
 
-struct pkt_tcp_ip6 {
-    struct ethhdr *eth;
-    struct ipv6hdr *ip6;
-    struct ipv6_sr_hdr *srh;
-    struct ipv6hdr *inner_ip6;
-    struct tcphdr *tcp;
-    __u32 srh_len;
-};
+/*
+Lane-Based specific Structs
+*/
 
-struct pkt_udp_ip4 {
-    struct ethhdr *eth;
-    struct ipv6hdr *ip6;
-    struct ipv6_sr_hdr *srh;
-    struct iphdr *inner_ip4;
-    struct udphdr *udp;
-    __u32 srh_len;
-};
-
-struct pkt_udp_ip6 {
-    struct ethhdr *eth;
-    struct ipv6hdr *ip6;
-    struct ipv6_sr_hdr *srh;
-    struct ipv6hdr *inner_ip6;
-    struct udphdr *udp;
-    __u32 srh_len;
+struct sfc_t {
+    struct bpf_spin_lock lock;
+    __u64 last_seen; // jiffies at packet reception
+    struct in6_addr segments[MAX_SEGMENTS];
+    __u32 n_segs;
 };
 
 struct lane_meta {
     __u32 lane;
 } __attribute__((aligned(4)));
 
-struct proxy_meta {
-    __u32 lane;
-} __attribute__((aligned(4)));
+/*
+Field-Based specific Structs
+*/
 
 struct srh_key {
     __u8 l3[L3_KEY_SIZE];
@@ -134,6 +89,7 @@ struct srh_key {
 struct l3_mask_t {
     __u8 bytes[MAX_L3_HDR_BYTES];
 };
+
 struct l4_mask_t {
     __u8 bytes[MAX_L4_HDR_BYTES];
 };
@@ -143,6 +99,6 @@ struct inner_l3_hdr {
     struct iphdr *ip4;
 };
 
-struct key_meta {
-    struct srh_key key;
+struct cached_outer_mock {
+    __u8 bytes[sizeof(struct cached_outer)];
 };

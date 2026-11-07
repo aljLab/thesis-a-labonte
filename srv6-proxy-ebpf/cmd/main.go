@@ -22,6 +22,11 @@ import (
 	"github.com/cilium/ebpf/link"
 )
 
+type Proto struct {
+    Name string
+    Number int
+}
+
 const (
 	cachedValueSize = 2104 // lock + len + pad + IPv6 header + max SRH + routingHdr
     SRH_TABLE_HASH_MAP_SIZE = 128
@@ -41,8 +46,8 @@ func main() {
 }
 
 func runCorrelationBasedProxy(){
-    fmt.Println("Running correlation-based Proxy...")
-    filePath := "pkg/ebpf/proxyv4.c"
+    fmt.Println("Field-based Proxy: Running Setup...")
+    filePath := "pkg/ebpf/field_based_srv6_proxy.c"
 
 	conf := setup.Config{
         InIfaces: []string{"bf-in"},
@@ -56,8 +61,6 @@ func runCorrelationBasedProxy(){
         log.Fatalf("Could not setup networking: %s", err)
     }
 
-    fmt.Printf("Set Up Networking\n")
-
     n := len(conf.InIfaces)
     ctx := context.Background()
 
@@ -67,18 +70,14 @@ func runCorrelationBasedProxy(){
     }
     defer os.RemoveAll(tmp)
 
-    fmt.Printf("Compiling programs\n")
-    // compile the ebpf programs
     baseObj := filepath.Join(tmp, "base.o")
     compileBPF(ctx, filePath, baseObj, n)
 
-    // load the collection spec
     spec, err := ebpf.LoadCollectionSpec(baseObj)
     if err != nil {
         log.Fatal("load base spec: ", err)
     }
 
-    // create Collection with high log level
     base, err := ebpf.NewCollectionWithOptions(
 		spec,
 		ebpf.CollectionOptions{
@@ -90,7 +89,6 @@ func runCorrelationBasedProxy(){
             },
 	)
     
-    // check verifier errors
     var ve *ebpf.VerifierError
 	if errors.As(err, &ve) {
 		fmt.Printf("Verifier log (%d lines):\n", len(ve.Log))
@@ -101,8 +99,6 @@ func runCorrelationBasedProxy(){
             log.Fatalf("Error when creating collection: %s", err);
         }
     }
-    fmt.Printf("Is err really nil: %s? is base not nil \n%s\n?\n", err, base)
-    fmt.Printf("Created Collection, no verifier errors... Trying to defer closing the collection\n")
 
     defer base.Close()
 
@@ -112,111 +108,64 @@ func runCorrelationBasedProxy(){
     macMap := base.Maps["mac_addr_table"]
     l3MaskMap := base.Maps["mask_table_l3"]
     l4MaskMap := base.Maps["mask_table_l4"]
-    tailcallMap := base.Maps["progs"]
     scratchMap := base.Maps["scratch_table"]
 
-    if srhMap == nil || linkMap == nil || macMap == nil || l3MaskMap == nil || l4MaskMap == nil || tailcallMap == nil || scratchMap == nil {
+    if srhMap == nil || linkMap == nil || macMap == nil || l3MaskMap == nil || l4MaskMap == nil || scratchMap == nil {
         log.Fatal("expected shared BPF maps are missing")
     }
 
-    // All maps are populated before attaching any program.
     zeroValue := make([]byte, cachedValueSize)
     if err := scratchMap.Put(uint32(0), zeroValue); err != nil {
         log.Fatal("initialize SRH scratch table entry: ", err)
     }
 
-    log.Printf("\nMacIndexMap %s\n", macIndexMappings)
-
-
     // Link-index keys 0..n-1 point to the toVNF interfaces.
     for i, iface := range macIndexMappings {
         // inIfaces..., OutIfaces..., DispatchVeth, RoutingBridge
-        // put LinkIndex in correct spot in LinIndex
         if err := linkMap.Put(uint32(i), uint32(iface.LinkIndex)); err != nil {
             log.Fatal("populate lane LinkIndex: ", err)
         }
-        // put mac addr in correct place in macMap
         if err := macMap.Put(uint32(i), paddedMAC(iface.Mac)); err != nil {
             log.Fatal("populate lane MAC: ", err)
         }
     }
+    
+    supportedL3Protos := []Proto{{Name: "ipv4", Number: 4}, { Name: "ipv6", Number: 6}}
 
-    supportedL3Versions := []uint32{4, 6}
+    mockFieldsMap := make(map[string][]utils.ImmutableHeaderField)
+    mockFieldsMap["ipv4"] = utils.MockIPv4ImmutableHdrFields
+    mockFieldsMap["ipv6"] = utils.MockIPv6ImmutableHdrFields
+    mockFieldsMap["tcp"] = utils.MockTcpImmutableHdrFields
+    mockFieldsMap["udp"] = utils.MockUdpImmutableHdrFields
 
-    for _, version := range supportedL3Versions {
-        switch(version){
-        case 4:
-            mask, err := utils.GetKeyMaskForProto(utils.MockIPv4ImmutableHdrFields); if err != nil {
-                fmt.Printf("Could not get key mask for IPv4: %s", err)
-            }
-            err = l3MaskMap.Put(version, utils.L3KeyMask{ Bytes: [utils.MAX_L3_HDR_LEN]byte(mask) }); if err != nil {
-                fmt.Printf("Could not insert key mask for version %d.\n", version)
-            }
-        case 6:
-            mask, err := utils.GetKeyMaskForProto(utils.MockIPv6ImmutableHdrFields); if err != nil {
-                fmt.Printf("Could not get key mask for IPv6: %s", err)
-            }
-            err = l3MaskMap.Put(version, utils.L3KeyMask{ Bytes: [utils.MAX_L3_HDR_LEN]byte(mask) }); if err != nil {
-                fmt.Printf("Could not insert key mask for version %d.\n", version)
-            }
+    for _, proto := range supportedL3Protos {
+        mask, err := utils.GetKeyMaskForProto(mockFieldsMap[proto.Name]); if err != nil {
+            fmt.Printf("Could not get key mask for IPv4: %s", err)
+        }
+        err = l3MaskMap.Put(uint32(proto.Number), utils.L3KeyMask{ Bytes: [utils.MAX_L3_HDR_LEN]byte(mask) }); if err != nil {
+            log.Fatalf("Could not insert key mask for proto %s.\n", proto.Name)
         }
     }
 
-    supportedL4Protocols := []uint32{6, 17}
+    supportedL4Protocols := []Proto{{ Name: "tcp", Number: 6 }, { Name: "udp", Number: 17}}
 
-    for _, version := range supportedL4Protocols {
-        switch(version){
-        case 6:
-            mask, err := utils.GetKeyMaskForProto(utils.MockTcpImmutableHdrFields); if err != nil {
-                fmt.Printf("Could not get key mask for IPv4: %s", err)
-            }
-            err = l4MaskMap.Put(version, utils.L4KeyMask{ Bytes: [utils.MAX_L4_HDR_LEN]byte(mask) }); if err != nil {
-                fmt.Printf("Could not insert key mask for version %d.\n", version)
-            }
-        case 17:
-            mask, err := utils.GetKeyMaskForProto(utils.MockUdpImmutableHdrFields); if err != nil {
-                fmt.Printf("Could not get key mask for IPv6: %s", err)
-            }
-            err = l4MaskMap.Put(version, utils.L4KeyMask{ Bytes: [utils.MAX_L4_HDR_LEN]byte(mask) }); if err != nil {
-                fmt.Printf("Could not insert key mask for protocol %d.\n", version)
-            }
+    for _, proto := range supportedL4Protocols {
+        mask, err := utils.GetKeyMaskForProto(mockFieldsMap[proto.Name]); if err != nil {
+            fmt.Printf("Could not get key mask for IPv6: %s", err)
+        }
+        err = l4MaskMap.Put(uint32(proto.Number), utils.L4KeyMask{ Bytes: [utils.MAX_L4_HDR_LEN]byte(mask) }); if err != nil {
+            log.Fatalf("Could not insert key mask for protocol %s.\n", proto.Name)
         }
     }
-    tcpInIp4 := base.Programs["tcp_in_ip4"]
-    tcpInIp6 := base.Programs["tcp_in_ip6"]
-    udpInIp4 := base.Programs["udp_in_ip4"]
-    udpInIp6 := base.Programs["udp_in_ip6"]
-    decapProg := base.Programs["decap"]
-    tailcalls := []*ebpf.Program{ // ordering must match the ebpf program map retrieval in proxy_ingress!
-        tcpInIp4,
-        tcpInIp6,
-        udpInIp4,
-        udpInIp6,
-        decapProg,
-    }
-    for i, tc := range tailcalls {
-        err = tailcallMap.Put(uint32(i), tc); if err != nil {
-            log.Fatal("populating tailcall map: ", err)
-        }
-    }
-
-    fmt.Println("Initialized all map values")
 
 	/*
     * Attach decap to dispatcher
 	*/
-    // attach all tailcalls
+
     ingressProg := base.Programs["proxy_ingress"]
     if ingressProg == nil {
         log.Fatal("decap program missing")
     }
-
-    var links []link.Link
-    defer func() {
-        for _, l := range links {
-            _ = l.Close()
-        }
-    }()
 
     decapIndex := macIndexMappings[2*n].LinkIndex
     decapLink, err := link.AttachXDP(link.XDPOptions{
@@ -226,9 +175,8 @@ func runCorrelationBasedProxy(){
     if err != nil {
         log.Fatal("attach ingress prog: ", err)
     }
-    links = append(links, decapLink)
 
-    fmt.Println("Succesfully attached prog to dispatch interface")
+    defer decapLink.Close()
 
     /*
     * ENCAP
@@ -241,12 +189,11 @@ func runCorrelationBasedProxy(){
         log.Fatalf("Did not find encap program.")
     }
 
-    l, err := link.AttachXDP(link.XDPOptions{
+    encapLink, err := link.AttachXDP(link.XDPOptions{
         Program:   encapProg,
         Interface: int(encapIface.LinkIndex),
     })
 
-    links = append(links, l)
     if errors.As(err, &ve) {
         fmt.Printf("Verifier log (%d lines):\n", len(ve.Log))
         fmt.Println(strings.Join(ve.Log, "\n"))
@@ -255,17 +202,19 @@ func runCorrelationBasedProxy(){
             log.Fatalf("attach encap to %d: %v", encapIface.LinkIndex, err)
         }
     }
+    defer encapLink.Close()
 
     fmt.Printf(
-        "decap attached to ifaceIndex %d; shared maps initialized for %d lanes\n",
-        decapIndex, n,
+        "decap attached to ifaceIndex %d; Field-based Proxy running now.\n",
+        decapIndex,
     )
 
     select {}
 }
 
 func runLaneBasedProxy(){
-    filePath := "pkg/ebpf/proxyv3.c"
+    fmt.Println("Lane-based Proxy: Setting up...")
+    filePath := "pkg/ebpf/lane_based_srv6_proxy.c"
 
 	conf := setup.Config{
         InIfaces: []string{"bf-00", "bf-10", "bf-20", "bf-30"},
@@ -291,27 +240,23 @@ func runLaneBasedProxy(){
     }
     defer os.RemoveAll(tmp)
 
-    fmt.Printf("Compiling programs\n")
-    // compile the ebpf programs
     baseObj := filepath.Join(tmp, "base.o")
     compileBPF(ctx, filePath, baseObj, n)
 
-    // load the collection spec
     spec, err := ebpf.LoadCollectionSpec(baseObj)
     if err != nil {
         log.Fatal("load base spec: ", err)
     }
 
-    // create Collection with high log level
     base, err := ebpf.NewCollectionWithOptions(
 		spec,
 		ebpf.CollectionOptions{
-				Programs: ebpf.ProgramOptions{
-					LogLevel: ebpf.LogLevelInstruction |
-						ebpf.LogLevelBranch |
-						ebpf.LogLevelStats,
-				},
+            Programs: ebpf.ProgramOptions{
+                LogLevel: ebpf.LogLevelInstruction |
+                    ebpf.LogLevelBranch |
+                    ebpf.LogLevelStats,
             },
+        },
 	)
     
     // check verifier errors
@@ -325,8 +270,6 @@ func runLaneBasedProxy(){
             log.Fatalf("Error when creating collection: %s", err);
         }
     }
-    fmt.Printf("Is err really nil: %s? is base not nil %s?\n", err, base)
-    fmt.Printf("Created Collection, no verifier errors... Trying to defer closing the collection\n")
 
     defer base.Close()
 
@@ -337,8 +280,6 @@ func runLaneBasedProxy(){
     laneMap := base.Maps["lane_table"]
     tailcallMap := base.Maps["progs"]
 
-    // per CPU / per target maps
-    // clockMap := base.Maps["clock_map"]
     sfcLaneMap := base.Maps["sfc_lane_map"]
 
     if srhMap == nil || linkMap == nil || macMap == nil {
@@ -349,7 +290,6 @@ func runLaneBasedProxy(){
         log.Fatal("expected per CPU BPF maps are missing")
     }
 
-    // All maps are populated before attaching any program.
     zeroValue := make([]byte, cachedValueSize)
     for i := 0; i < n; i++ {
         if err := srhMap.Put(uint32(i), zeroValue); err != nil {
@@ -357,34 +297,23 @@ func runLaneBasedProxy(){
         }
     }
 
-    log.Printf("\nMacIndexMap %s\n", macIndexMappings)
-
-
     // Link-index keys 0..n-1 point to the toVNF interfaces.
     for i, iface := range macIndexMappings {
         // inIfaces..., OutIfaces..., DispatchVeth, RoutingBridge
-        // put LinkIndex in correct spot in LinIndex
         if err := linkMap.Put(uint32(i), uint32(iface.LinkIndex)); err != nil {
             log.Fatal("populate lane LinkIndex: ", err)
         }
-        // put mac addr in correct place in macMap
         if err := macMap.Put(uint32(i), paddedMAC(iface.Mac)); err != nil {
             log.Fatal("populate lane MAC: ", err)
         }
         n_lanes := len(macIndexMappings)/2 - 1
-        if(i >= n_lanes && i < 2*n_lanes){ // indeces n -> 2n-1 are outgoing interfaces
+        if(i >= n_lanes && i < 2*n_lanes){ // indices n -> 2n-1 are outgoing interfaces
             err := laneMap.Put(uint32(iface.LinkIndex), uint32(i - n_lanes)); if err != nil {
                 log.Fatal("populating lane map (link_index of return iface -> lane): ", err)
             }
         }
     }
 
-    // init clock map
-    /* if err := clockMap.Put(uint32(0), uint64(0)); err != nil {
-        log.Fatal("populating clock map: ", err)
-    } */
-
-    // init per cpu map
     zeroValue = make([]byte, 2072) // 2064 /w lock
     for i := range n {
         if err := sfcLaneMap.Put(uint32(i), zeroValue); err != nil {
@@ -393,12 +322,9 @@ func runLaneBasedProxy(){
     }
 
     decapProg := base.Programs["decap"]
-    // init prog map
     err = tailcallMap.Put(uint32(0), decapProg); if err != nil {
         log.Fatal("populating tailcall map: ", err)
     }
-
-    fmt.Println("Initialized all map values")
 
 	/*
     * Attach decap to dispatcher
@@ -426,7 +352,6 @@ func runLaneBasedProxy(){
     }
     links = append(links, decapLink)
 
-    fmt.Println("Succesfully attached prog to dispatch interface\n")
 
     var encapCollections []*ebpf.Collection
     defer func() {
@@ -466,7 +391,6 @@ func runLaneBasedProxy(){
         decapIndex, n,
     )
 
-    // TODO: consider pinning here (storing the file descriptor to keep the objects from being gc'ed)
     select {}
 }
 
