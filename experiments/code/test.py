@@ -138,8 +138,9 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool
             send_sniffer.stop()
         if return_sniffer.running:
             return_sniffer.stop()
-        print("rx packets: ", len(rx_times))
         print("tx packets: ", len(tx_times))
+        print("rx packets: ", len(rx_times))
+        print("Tags: ", rx_tags, tx_tags)
 
 def packet_received(pkt):
     if Raw not in pkt:
@@ -147,10 +148,9 @@ def packet_received(pkt):
     seq = int.from_bytes(pkt[Raw].load[:8], "little")
     rx_times[seq] = float(pkt.time)
     srh = pkt.getlayer(IPv6ExtHdrSegmentRouting)
-    rx_tags[srh.tag] = rx_tags[srh.tag] + 1 if srh else None
     if srh and srh.tag in rx_tags:
         rx_tags[srh.tag] += 1
-    else:
+    elif srh:
         rx_tags[srh.tag] = 1
 
 def packet_outbound(pkt):
@@ -161,7 +161,7 @@ def packet_outbound(pkt):
     srh = pkt.getlayer(IPv6ExtHdrSegmentRouting)
     if srh and srh.tag in tx_tags:
         tx_tags[srh.tag] += 1
-    else:
+    elif srh:
         tx_tags[srh.tag] = 1
 
 
