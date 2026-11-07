@@ -88,7 +88,6 @@ int parse_pkt_tcp_ip4(struct pkt_tcp_ip4 *p, void *start, void *end)
         return -1;
 
     __u8 hdr_ext_len = p->srh->hdrlen;
-    __u8 last_index = p->srh->first_segment;
 
     p->srh_len = RH_SIZE + hdr_ext_len * 8;
     if(p->srh_len > MAX_SRH_LEN)
@@ -124,7 +123,6 @@ int parse_pkt_tcp_ip6(struct pkt_tcp_ip6 *p, void *start, void *end)
         return -1;
 
     __u8 hdr_ext_len = p->srh->hdrlen;
-    __u8 last_index = p->srh->first_segment;
 
     p->srh_len = RH_SIZE + hdr_ext_len * 8;
     if(p->srh_len > MAX_SRH_LEN)
@@ -160,7 +158,6 @@ int parse_pkt_udp_ip4(struct pkt_udp_ip4 *p, void *start, void *end)
         return -1;
 
     __u8 hdr_ext_len = p->srh->hdrlen;
-    __u8 last_index = p->srh->first_segment;
 
     p->srh_len = RH_SIZE + hdr_ext_len * 8;
     if(p->srh_len > MAX_SRH_LEN)
@@ -196,7 +193,6 @@ int parse_pkt_udp_ip6(struct pkt_udp_ip6 *p, void *start, void *end)
         return -1;
 
     __u8 hdr_ext_len = p->srh->hdrlen;
-    __u8 last_index = p->srh->first_segment;
 
     p->srh_len = RH_SIZE + hdr_ext_len * 8;
     if(p->srh_len > MAX_SRH_LEN)
@@ -205,11 +201,11 @@ int parse_pkt_udp_ip6(struct pkt_udp_ip6 *p, void *start, void *end)
     if((void *)((char *)p->srh + p->srh_len) > end)
         return -1;
     
-    p->inner_ip6 = (void *)((char *)p->srh + p->srh_len);
+    p->inner_ip6 = (struct ipv6hdr *)((char *)p->srh + p->srh_len);
     if((void *)(p->inner_ip6 + 1) > end)
         return -1;
     
-    p->udp = (void*)(p->inner_ip6 + 1);
+    p->udp = (struct udphdr *)(p->inner_ip6 + 1);
     if((void *)(p->udp + 1) > end)
         return -1;
 
@@ -317,7 +313,7 @@ int parse_inner_l3(char *start, __u32 *inner_l3_version, __u32 *l3_len, __u32 *l
 static __always_inline
 int mask_hdr(__u8 *hdr, __u8 *mask, __u32 len, __u8 *dst, void *end, __u32 key_size)
 {   
-    bpf_printk("Masking header with keysize %u and actual hdr size=%u", key_size, len);
+    // bpf_printk("Masking header with keysize %u and actual hdr size=%u", key_size, len);
     if(key_size > MAX_FIXED_HDR_LEN_GLOBAL)
         key_size = MAX_FIXED_HDR_LEN_GLOBAL;
 
@@ -668,7 +664,6 @@ int proxy_ingress(struct xdp_md *ctx)
 SEC("xdp")
 int proxy_egress(struct xdp_md *ctx)
 {   
-    bpf_printk("Entering Egress");
     void *start = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
     
@@ -779,7 +774,6 @@ int proxy_egress(struct xdp_md *ctx)
     __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &link_index_key);
     if(!link_index)
         return XDP_DROP;
-    bpf_printk("Leaving Egress");
     return bpf_redirect(*link_index, 0);
 }
 
@@ -808,10 +802,10 @@ int tcp_in_ip4(struct xdp_md *ctx)
 
     return XDP_ABORTED;
 }
+
 SEC("xdp")
 int udp_in_ip4(struct xdp_md *ctx)
 {
-    bpf_printk("Entered udp_in_ip4...");
     void *start = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
     void *meta = (void *)(long)ctx->data_meta;
@@ -834,6 +828,7 @@ int udp_in_ip4(struct xdp_md *ctx)
 
     return XDP_ABORTED;
 }
+
 SEC("xdp")
 int tcp_in_ip6(struct xdp_md *ctx)
 {
@@ -859,6 +854,7 @@ int tcp_in_ip6(struct xdp_md *ctx)
 
     return XDP_ABORTED;
 }
+
 SEC("xdp")
 int udp_in_ip6(struct xdp_md *ctx)
 {
@@ -929,13 +925,6 @@ int decap(struct xdp_md *ctx)
     if(bpf_xdp_adjust_head(ctx, p->outer_len) < 0)
         return XDP_DROP;
 
-    /* // refetch pointers/reparse needed headers
-    start = (void *)(long)ctx->data;
-    end = (void *)(long)ctx->data_end;
-
-    if(update_eth_hdr(start, end) < 0)
-        return XDP_DROP; */
-
     // fetch linkIndex of outgoing lane interface
     __u32 link_key = 0;
     __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &link_key);
@@ -943,7 +932,6 @@ int decap(struct xdp_md *ctx)
     if(!link_index || !*link_index)
         return XDP_DROP;
     
-    bpf_printk("Leaving Ingress");
     return bpf_redirect(*link_index, 0);
 }
 

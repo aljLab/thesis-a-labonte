@@ -198,11 +198,11 @@ func getMaskLenL4(L4 ProtocolName) (int, error) {
 
 func getMaskLen(proto ProtocolName) (int, error) {
 	if isL3(proto){
-		return MAX_L3_HDR_LEN, nil//getMaskLenL3(proto)
+		return MAX_L3_HDR_LEN, nil // getMaskLenL3(proto)
 	}
 
 	if isL4(proto) {
-		return MAX_L4_HDR_LEN, nil //getMaskLenL4(proto)
+		return MAX_L4_HDR_LEN, nil // getMaskLenL4(proto)
 	}
 
 	return -1, fmt.Errorf("Unsupported Protocol: %s", proto)
