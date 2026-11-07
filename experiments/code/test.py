@@ -81,7 +81,7 @@ def benchmark(
 
     report_results(results, misclassified)
 
-    if not test:
+    if not test and misclassified == 0:
         store_results(results, n, srv6, log_string, scenario)
 
     print(f"Successfully benchmarked with {n} packets ({send_iface} --> {receive_iface}, srv6: {srv6})")
@@ -179,7 +179,7 @@ def store_results(results, n, srv6, log_string, scenario):
 
     os.makedirs("results", exist_ok=True)
 
-    file_path = f"results/{kind}_{infix}_{scenario}_{n}_{t}.csv"
+    file_path = f"results/{kind}_{infix}{scenario}_{n}_{t}.csv"
     with open(file_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["rtt_ns"])
