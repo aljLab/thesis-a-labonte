@@ -99,7 +99,7 @@ proxy:
         match:
             type: EXACT_MATCH
 ```
-If the service chain is not identified by an exact header match field alone, th euser can specify an arbitrary bit map to specify which fields to use to compute the key. For example, to match on the `/24` src subnet instead of one particular IP, this could be used.
+If the service chain is not identified by an exact header match field alone, the user can specify an arbitrary bit map to specify which fields to use to compute the key. For example, to match on the `/24` src subnet instead of one particular IP, this could be used.
 
 ```
 kind: NetworkFunction
