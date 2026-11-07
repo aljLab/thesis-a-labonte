@@ -124,7 +124,7 @@ def run_bench(n:int, send_iface:str, receive_iface:str, srv6:bool, inner_v4:bool
 
     try:
         for seq in range(n):
-            pick = random.randint(length) # send randomized to minimize chance of systematically wrong encap
+            pick = random.randint(0, length - 1) # send randomized to minimize chance of systematically wrong encap
             pkt = s[pick]
             payload = seq.to_bytes(8, "little")
             pkt[Ether].src=src_mac
