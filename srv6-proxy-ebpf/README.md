@@ -67,17 +67,11 @@ Note that there is one set of send/receive interfaces only.
 ### Programs
 For our implementation, we limit the support of inner L3 and L4 protocols to IPv4, IPv6, UDP, TCP. The prototype can be easily extended to support more.
 
-#### `proxy_ingress`
-The first program parses the inner L3 header and retrieves the fields in $S_{sfc}$ being part of the L3 header. It computes a partial key from those and passes it on to the next eBPF program, which is picked based on the version of the inner L3 packet and the next_proto field (`protocol` or `nexthdr`). `proxy_ingress` picks the next program, makes a tailcall and writes the (potentially partial) key to the buffer's metadata.
+#### `proxy_ingress` (or decap)
+The ingress program computes a key (see [here](#key-calculation)) based on inner L3 and L4 headers. WHich fields to use for key calculation needs to be configured prior and is communicated to the program via eBPF maps.
+The program decapsulates the packet, updates, and caches the header using the calculated key. It also updates the ethernet header to be addressed to its corresponding `fromVNF` interface. Otherwise the packet might be dropped if the interface is not in promiscuous mode.
 
-#### Protocol-dependent L4 parsing programs
-To make the proxy more modular and avoid too many checks based on IP version and L4 protocol, we create one eBPF program for each combination of L3/L4 we currently support (`tcp_in_ipv4`, `tcp_in_ipv6`, `udp_in_ipv4`, and `udp_in_ipv6`). The program can be extended to support more protocols by adding more of those functions and adapting the switching logic in `proxy_ingress`.
-Each of the programs parses L4 fields in $S_{sfc}$ and completes key calculation. Each program then makes a tailcall to the generic `decap` xdp program, which performs packet decapsulation, header caching and redirecting the packet.
-
-#### `decap`
-The `decap` program decapsulates the packet, updates, and caches the header. It also updates the ethernet header to be addressed to its corresponding `fromVNF` interface. Otherwise the packet might be dropped if the interface is not in promiscuous mode.
-
-#### `proxy_egress`
+#### `proxy_egress` (or encap)
 The return traffic (`fromVNF`) is received by the `proxy_egress` program, which computes the key in the same way as above (without using protocol dependent L4 parsing programs), fetches the cached header and reencapsulates the packet.
 
 ### Idealized Flow
@@ -124,7 +118,14 @@ The user can then go on and use the deployed (not SRv6-capable!) target in his s
 > We want to offer this flexibility in Loom by letting users configure proxy behavior in the `Spec` of a NF.
 
 ### Key Calculation
-The key is calculated using bitmasks provided by the user space loader. The masks are computed from the yaml configuration in the NF Spec. The masks are stored in eBPF maps and are retrieved by the decap and encap routines. If the inner L3 header is IPv4, the bitmask for IPv4 is retrieved and applied to the parsed header. Masked headers of L3 and L4 are combined to form the lookup key.
+The key is calculated using bitmasks provided by the user space loader. The masks are computed from the yaml configuration in the NF Spec. The masks are stored in eBPF maps and are retrieved by the decap and encap routines. If the inner L3 header is IPv4, the bitmask for IPv4 is retrieved and applied to the parsed header. Masked headers of L3 and L4 are combined to form the lookup key. The key is a datastructure holding the masked L3 header and masked L4 header.
+```
+struct srh_key {
+    __u8 l3[L3_KEY_SIZE];
+    __u8 l4[L4_KEY_SIZE];
+};
+```
+The key size is the maximum size of any supported L3 header without variable lenght parts (that is extension headers or options). E.g. for L3 and supported IPv4/IPv6: L3_KEY_SIZE= max(20, 40) = 40 bytes.
 
 ## Performance
 We evaluate the userspace and eBPF proxy variants using the evaluation script described in detail [here](../experiments/code/README.md). We run experiments on an x86_64 host with 8 CPUs (AMD Ryzen 5 Pro 2500U) with Ubuntu 26.04.1 LTS (Kernel 7.0.0-38-generic).
