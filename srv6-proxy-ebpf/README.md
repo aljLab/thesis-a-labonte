@@ -125,3 +125,14 @@ The user can then go on and use the deployed (not SRv6-capable!) target in his s
 
 ### Key Calculation
 The key is calculated using bitmasks provided by the user space loader. The masks are computed from the yaml configuration in the NF Spec. The masks are stored in eBPF maps and are retrieved by the decap and encap routines. If the inner L3 header is IPv4, the bitmask for IPv4 is retrieved and applied to the parsed header. Masked headers of L3 and L4 are combined to form the lookup key.
+
+## Performance
+We evaluate the userspace and eBPF proxy variants using the evaluation script described in detail [here](../experiments/code/README.md). We run experiments on an x86_64 host with 8 CPUs (AMD Ryzen 5 Pro 2500U) with Ubuntu 26.04.1 LTS (Kernel 7.0.0-38-generic).
+The baseline measurements is the transmission delay of a veth pair without any proxying or additional packet processing. For the other conditions, we send SRv6 traffic through a veth pair but with the proxy in fornt of it. The proxy always decapsulates and re-encapsulates after the reception time is taken.
+In order to simulate the Loom environment, we send traffic on an interface attached to a central routing bridge, mirroring Loom's networking architecture.
+
+We use a scenario with 10 different service chains for the eBPF implementation and a scenario with one service chain for the user space implementation.
+
+The eBPF proxy solutions have similar means, but differ significantly (field-based=41.32µs, lane-based=40.89µs, p=0.016). Both are significantly faster than the userspace implementation (mean=301.5µs).
+
+![proxy-performance](proxy-comp.png)
