@@ -1,6 +1,23 @@
 # SRv6 Proxy eBPF
 
-We build two different version of a proxy. One uses the `fromVNF` interface to assign a service chain to returning non-SRv6 traffic (*lane-based*) and the other uses immutable header fields to distinguish between service chains (*field-based*).
+We build three different version of a proxy. The simplest is an implementation of the dynamic proxy behavior described e.g. [here](https://datatracker.ietf.org/doc/draft-ietf-spring-srv6-service-programming/). From the other two, one uses multiple `fromVNF` interfaces to assign a service chain to returning non-SRv6 traffic (*lane-based*) and the other uses immutable header fields to distinguish between service chains (*field-based*).
+
+## Simple Dynamic Proxying
+The dynamic proxy caches SRH headers dynamically and re-encapsulates packets with the cached header returning on a specified interface. The interface isolates the SRv6 context.
+
+### Setup
+To test the dynamic proxy run `cmd/main.go` with `--type=dynamic`. This sets up networking and attaches `encap` and `decap` programs to a veth pair, which mimic a VNF. The proxy caches the SRH on each incoming packet. As a consequence, packets can be encapsulated incorrectly, if the sender is faster than the VNF: If Packet $A$ arrives, header $SRH_{A}$ is cached. The decapsulated packet enters the VNF and is being processed. Then packet $B$ (belonging to a different SFC) arrives at the proxy, causing a cache update (cache=$SRH_{B}$). By the time $A$ is returned from the VNF, the header to re-encapsulate the packet belongs to a different service chain and A is encapsulated incorrectly.
+
+### Testing
+To see the proxy in action, listen with `tcpdump` on the veth peer attached to the bridge (`bridge-port`) and send SRv6 packets using scapy.
+```
+p = Ether()/IPv6(src="2001:db8:1::1", dst="2001:db8:2::1")/IPv6ExtHdrSegmentRouting(addresses=["2001:db8:3::1","2001:db8:2::1"], segleft=1, lastentry=1)/IPv6(src="fd00::1", dst="fd00::2")/ICMPv6EchoRequest()
+sendp(p, iface="bridge-port")
+```
+
+> If no traffic arrives, enable gro on bridge-port `sudo ethtool -K bridge-port gro on`.
+> Note that when using veths, XDP might not be advertised/enabled, which would lead to `xdp_redirect` errors. To make a veth-peer (e.g. the dispatcher veth-peer) accept XDP redirects, one can enable `gro` on the other veth-peer using `ethtool`. 
+> Enabling gro creates a ring buffer and NAPI instance, into which the XDP redirect buffer can be written and be consumed by.
 
 ## Lane-Based SRv6 Proxying
 This SRv6 proxy implementation in eBPF uses several XDP programs.
@@ -10,9 +27,9 @@ The inner packet is not touched and forwarded and reencapsulated as is.
 The egress pipeline (`fromVNF`) retrieves the correct lane (which encodes the lookup key for the cached IPv6+SRH) from an eBPF map based on the interface a packet is received on. Note that the incoming interface is determined by the redirect decision made by the ingress pipeline (`toVNF`). A map ($linkIndex \rightarrow lane$) is required to map the link index of the receiving interface to the correct lane.
 Three XDP programs are used to classify, decapsulate and re-encapsulate SRv6 traffic traversing the proxy.
 ### Setup
-To test the proxy, build and run `cmd/main.go` with `--lane-based=true`. This will set up a routing bridge, several veth-interface pairs cosplaying as legacy VNFs, and a veth pair connecting a dispatcher to the routing bridge (one peer is enslaved to the bridge).
-> Note that when using veths, XDP might not be advertised/enabled, which would lead to `xdp_redirect` errors. To make a veth-peer (e.g. the dispatcher veth-peer) accept XDP redirects, one can enable `gro` on the other veth-peer using `ethtool`. 
-> Enabling gro creates a ring buffer and NAPI instance, into which the XDP redirect buffer can be written and be consumed by.
+To test the proxy, build and run `cmd/main.go` with `--type=lane`. This will set up a routing bridge, several veth-interface pairs cosplaying as legacy VNFs, and a veth pair connecting a dispatcher to the routing bridge (one peer is enslaved to the bridge).
+
+> If no traffic arrives, enable gro on bridge-port `sudo ethtool -K routing-bridge-port gro on`.
 
 The main program loads the eBPF collections and attaches them to the correct interfaces.
 It also populates maps with the correct information. For testing/development the coupling of interfaces is decided from the order in the interface declaration in `main.go`.
@@ -48,7 +65,6 @@ It then redirects the packet through the dispatcher veth peer, which leads to th
 
 > `bpf_redirect()` in XDP only supports emitting packets on the egress queue of interfaces, hence "redirecting" a packet means "putting it out through". In TC, packets can be directly redirected to the ingress queue of another interface.
 
-
 ## Field-based SRv6 Proxying
 One inherent limitation of the lane-based proxying is that it only supports $n$ SFCs being in flight at the same time. For this it requires $2n$ interfaces. While the amount of interfaces can be artifically increased by using e.g. SR-IOV, the total number is usually limited. 
 Working around this limitation requires to change the way the SRv6 context is reconstructed in the proxy egress. Lane-based proxying uses the return interface to isolate the context, which couples the amount of supported SFCs (at the same time) and the number of required interfaces.
@@ -60,9 +76,10 @@ On return traffic, the egress component parses $S_{sfc}$ and calculates the key.
 This is an elegant solution, if a set $S_{sfc}$ exists. If it does not, lane-based proxying can still be used.
 
 ### Setup 
-Build and run `cmd/main.go` with `--lane-based=false`. This sets up interfaces simmilar to the setup described for lane-based proxying. Consult the source code in `main.go` for names of interfaces etc.
+Build and run `cmd/main.go` with `--type=field`. This sets up interfaces simmilar to the setup described for lane-based proxying. Consult the source code in `main.go` for names of interfaces etc.
 Same as above, veth pairs might need to have one end with enabled `gro` (use `sudo ethtool -K <iface> gro on` to enable) to accept XDP redirects.
 Note that there is one set of send/receive interfaces only.
+> If no traffic arrives, enable gro on the bridge-port `sudo ethtool -K br-port gro on`.
 
 ### Programs
 For our implementation, we limit the support of inner L3 and L4 protocols to IPv4, IPv6, UDP, TCP. The prototype can be easily extended to support more.

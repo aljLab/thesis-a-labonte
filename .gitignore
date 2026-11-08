@@ -13,3 +13,5 @@ try_out/
 __pycache__/
 
 archive/
+
+.ipynb_checkpoints
