@@ -39,22 +39,8 @@ control forward_control(
 
     }
 
-    table drop_table {
-        key = { headers.ipv6.dst_addr: exact; }
-
-        actions = {
-            drop;
-        }
-
-        default_action = drop();
-    }
-
     apply {
-        if(headers.ipv6.isValid()){
-            forward_table.apply();
-        } else {
-            drop_table.apply();
-        }
+        forward_table.apply();
     }
 }
 
