@@ -27,6 +27,14 @@ type Proto struct {
     Number int
 }
 
+type ProxyType string
+
+const (
+    DYNAMIC_TYPE ProxyType = "dynamic"
+    LANE_TYPE ProxyType = "lane"
+    FIELD_TYPE ProxyType = "field"
+)
+
 const (
 	cachedValueSize = 2104 // lock + len + pad + IPv6 header + max SRH + routingHdr
     SRH_TABLE_HASH_MAP_SIZE = 128
@@ -34,15 +42,154 @@ const (
 )
 
 func main() {
-    var laneBased bool
-    flag.BoolVar(&laneBased, "lane-based", true, "Indicate to use lane-based proxying.")
+    var proxyType string
+    flag.StringVar(&proxyType, "type", string(DYNAMIC_TYPE), "Indicate which proxy type to use (dynamic, lane or field).")
     flag.Parse()
 
-    if laneBased {
+    switch(proxyType){
+    case string(DYNAMIC_TYPE):
+        runDynamicProxy()
+    case string(LANE_TYPE):
         runLaneBasedProxy()
-    } else {
+    case string(FIELD_TYPE):
         runCorrelationBasedProxy()
+    default:
+        fmt.Printf("Unsupported proxy type %s. Use --type='dynamic', 'lane', or 'field'.", proxyType);
     }
+}
+
+func runDynamicProxy(){
+    fmt.Println("Dynamic Proxy: Setting up...")
+    filePath := "pkg/ebpf/dynamic_proxy.c"
+
+	conf := setup.Config{
+        InIfaces: []string{"toVNF"},
+        OutIfaces: []string{"fromVNF"},
+        BridgePortVeth: "bridge-port",
+        DispatchVeth: "dispatch-dyn",
+        RoutingBridgeName: "routing-bridge",
+    }
+
+    macIndexMappings, err := setup.Setup(&conf); if err != nil {
+        log.Fatalf("Could not setup networking: %s", err)
+    }
+    defer setup.CleanUpNetworkingSetup(&conf)
+
+    fmt.Printf("Set Up Networking\n")
+
+    n := len(conf.InIfaces)
+    ctx := context.Background()
+
+    tmp, err := os.MkdirTemp("", "ebpf-proxy-*")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer os.RemoveAll(tmp)
+
+    baseObj := filepath.Join(tmp, "base.o")
+    compileBPF(ctx, filePath, baseObj, n)
+
+    spec, err := ebpf.LoadCollectionSpec(baseObj)
+    if err != nil {
+        log.Fatal("load base spec: ", err)
+    }
+
+    base, err := ebpf.NewCollectionWithOptions(
+		spec,
+		ebpf.CollectionOptions{
+            Programs: ebpf.ProgramOptions{
+                LogLevel: ebpf.LogLevelInstruction |
+                    ebpf.LogLevelBranch |
+                    ebpf.LogLevelStats,
+            },
+        },
+	)
+    
+    // check verifier errors
+    var ve *ebpf.VerifierError
+	if errors.As(err, &ve) {
+		fmt.Printf("Verifier log (%d lines):\n", len(ve.Log))
+		fmt.Println(strings.Join(ve.Log, "\n"))
+		os.Exit(-1)
+	} else {
+        if err != nil {
+            log.Fatalf("Error when creating collection: %s", err);
+        }
+    }
+
+    defer base.Close()
+
+    // shared maps
+    srhMap := base.Maps["srh_table"]
+    linkMap := base.Maps["link_index_table"]
+    macMap := base.Maps["mac_addr_table"]
+
+    if srhMap == nil || linkMap == nil || macMap == nil {
+        log.Fatal("expected shared BPF maps are missing")
+    }
+
+    zeroValue := make([]byte, cachedValueSize)
+    if err := srhMap.Put(uint32(0), zeroValue); err != nil {
+        log.Fatal("initialize SRH entry: ", err)
+    }
+
+    // Link-index keys 0..n-1 point to the toVNF interfaces.
+    for i, iface := range macIndexMappings {
+        // inIfaces..., OutIfaces..., DispatchVeth, RoutingBridge
+        if err := linkMap.Put(uint32(i), uint32(iface.LinkIndex)); err != nil {
+            log.Fatal("populate lane LinkIndex: ", err)
+        }
+        if err := macMap.Put(uint32(i), paddedMAC(iface.Mac)); err != nil {
+            log.Fatal("populate lane MAC: ", err)
+        }
+    }
+
+	/*
+    * Attach decap to dispatcher
+	*/
+
+    classifyProg := base.Programs["decap"]
+    if classifyProg == nil {
+        log.Fatal("decap program missing")
+    }
+
+    decapIndex := macIndexMappings[2].LinkIndex
+    decapLink, err := link.AttachXDP(link.XDPOptions{
+        Program:   classifyProg,
+        Interface: int(decapIndex),
+    })
+    if err != nil {
+        log.Fatal("attach classify prog (-> tailcall to decap): ", err)
+    }
+    defer decapLink.Close()
+
+    encapProg := base.Programs["encap"]
+    if encapProg == nil {
+        log.Fatal("encap program missing")
+    }
+    encapIndex := macIndexMappings[1].LinkIndex
+    encapLink, err := link.AttachXDP(link.XDPOptions{
+        Program:   encapProg,
+        Interface: int(encapIndex),
+    })
+
+    if errors.As(err, &ve) {
+        fmt.Printf("Verifier log (%d lines):\n", len(ve.Log))
+        fmt.Println(strings.Join(ve.Log, "\n"))
+    } else {
+        if err != nil {
+            log.Fatalf("attach encap to %d: %v", encapIndex, err)
+        }
+    }
+
+    defer encapLink.Close()
+
+    fmt.Printf(
+        "decap attached to ifaceIndex %d; Dynamic Proxy running...\n",
+        decapIndex,
+    )
+
+    select {}
 }
 
 func runCorrelationBasedProxy(){

@@ -343,7 +343,6 @@ int copy_cached_to_buffer(struct ethhdr *eth, struct cached_outer *cached, void 
             return -1;
         }
         dst_bytes[i] = cached_bytes[i];
-        //__builtin_memcpy((void *)((char *)dst + len_64*8 + i), (void *)((char *)cached->bytes + len_64*8 + i), 1);
     }
     bpf_spin_unlock(&cached->lock);
 
@@ -365,11 +364,9 @@ int update_ethhdr_encap(struct ethhdr *eth, void *end)
     if(!src || !dst)
         return -1;
     
-    // replace mac addresses
     __builtin_memcpy((void *)eth->h_source, (void *)src->addr, sizeof(eth->h_source));
     __builtin_memcpy((void *)eth->h_dest, (void *)dst->addr, sizeof(eth->h_dest));
 
-    // set next proto to IPv6
     eth->h_proto = bpf_htons(ETH_P_IPV6);
 
     return 0;
@@ -411,7 +408,6 @@ int update_eth_hdr(void *start, void *end)
     if((void *)((char *)eth + sizeof(struct ethhdr)) > end)
         return -1;
 
-    // lookup mac addresses
     __u32 src_key = 0;
     __u32 dst_key = 1;
     struct mac_entry *src_mac = bpf_map_lookup_elem(&mac_addr_table, &src_key);
@@ -420,11 +416,9 @@ int update_eth_hdr(void *start, void *end)
     if (!src_mac || !dst_mac) 
         return -1;
 
-    // replace mac addresses
     __builtin_memcpy((void *)eth->h_source, (void *)src_mac->addr, sizeof(eth->h_source));
     __builtin_memcpy((void *)eth->h_dest, (void *)dst_mac->addr, sizeof(eth->h_dest));
 
-    // update next proto
     if((void *)((char *)eth + sizeof(struct ethhdr) + 1) > end)
         return -1;
 
@@ -484,7 +478,6 @@ int proxy_ingress(struct xdp_md *ctx)
         return XDP_DROP;
 
     if(cp_ethhdr_in_front_of_inner(&p))
-    // get dst/src mac addresses update eth header h_proto in packet
 
      if(update_eth_hdr(p.eth, end) < 0)
         return XDP_DROP;
@@ -492,7 +485,7 @@ int proxy_ingress(struct xdp_md *ctx)
     if(bpf_xdp_adjust_head(ctx, p.outer_len) < 0)
         return XDP_DROP;
 
-    // fetch linkIndex of outgoing lane interface
+    // fetch linkIndex of outgoing interface, per convention at index 0
     __u32 link_key = 0;
     __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &link_key);
     
@@ -550,16 +543,14 @@ int proxy_egress(struct xdp_md *ctx)
     if(update_ethhdr_encap(eth, end) < 0)
         return XDP_DROP;
     
-    // copy cached->bytes in front of inner packet
     if(copy_cached_to_buffer(eth, cached, end) < 0)
         return XDP_DROP;
     
-    // update nexthdr based on version observed previously
     if(update_nxthdr(eth, end, inner_l3_version) < 0)
         return XDP_DROP;
 
     // lookup index of dispatcher veth
-    __u32 link_index_key = 2*N; // per convention the dispatcher veths idx is at index <2N>
+    __u32 link_index_key = 2; // per convention the dispatcher veths idx is at index 2
     __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &link_index_key);
     if(!link_index)
         return XDP_DROP;

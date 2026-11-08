@@ -39,14 +39,6 @@ struct {
     __type(value, struct sfc_t); // age and content information on recently seen
 } sfc_lane_map SEC(".maps");
 
-/* // one-entry clock map storing a monotonic clock value increasing on each SRv6 packet
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, __u32); // always 0
-    __type(value, __u64); // clock value TODO: add locking
-} clock_map SEC(".maps"); */
-
 // not modified by xdp programs
 struct {
     __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
@@ -142,7 +134,6 @@ static __always_inline
 int update_lane_cache(struct in6_addr *new_segs, __u32 n_seg, struct sfc_t *sfc, __u64 *rx_time, void *end)
 {
     bpf_spin_lock(&sfc->lock);
-    // calling program takes care of locking
     if(n_seg > MAX_SEGMENTS){
         bpf_spin_unlock(&sfc->lock);
         return -1;
@@ -467,12 +458,6 @@ eBPF PROGRAMS
 SEC("xdp")
 int classify_sfc(struct xdp_md *ctx)
 {   
-    /* __u32 clock_index = 0;
-    __u64 *clock = bpf_map_lookup_elem(&clock_map, &clock_index);
-
-    if(!clock)
-        return XDP_ABORTED;
-     */
     __u64 rx_time = bpf_jiffies64();
     
     if(bpf_xdp_adjust_meta(ctx, -(int)sizeof(struct lane_meta)) < 0)
@@ -492,10 +477,9 @@ int classify_sfc(struct xdp_md *ctx)
         return XDP_DROP;
     
     if(filter_srv6_traffic(p) < 0)
-        return XDP_DROP; // maybe pass on? need to ensure that not encaped
+        return XDP_DROP;
     
      __u32 lane = 0;
-    // (*clock)++; // ensure clock is always bigger than 0
 
     if(assign_lane(p->srh->segments, p->n_segs, &rx_time, &lane, end) < 0)
         return XDP_ABORTED;
@@ -534,7 +518,6 @@ int decap(struct xdp_md *ctx)
         return XDP_DROP;
 
     if(cp_ethhdr_in_front_of_inner(p))
-    // get dst/src mac addresses update eth header h_proto in packet
 
     if(update_eth_hdr(p->eth, end, lane) < 0)
         return XDP_DROP;
@@ -542,14 +525,6 @@ int decap(struct xdp_md *ctx)
     if(bpf_xdp_adjust_head(ctx, p->outer_len) < 0)
         return XDP_DROP;
 
-    // refetch pointers/reparse needed headers
-   /*  start = (void *)(long)ctx->data;
-    end = (void *)(long)ctx->data_end;
-
-    if(update_eth_hdr(start, end, lane) < 0)
-        return XDP_DROP; */
-
-    // fetch linkIndex of outgoing lane interface
     __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &lane);
     
     if(!link_index || !*link_index)
@@ -590,11 +565,9 @@ int encap(struct xdp_md *ctx)
     if (len > MAX_CACHED_HDR)
         len = MAX_CACHED_HDR;
     
-    // adjust head
     if(bpf_xdp_adjust_head(ctx, -(int)len) < 0)
         return XDP_DROP;
 
-    // reload pointers
     start = (void *)(long)ctx->data;
     end = (void *)(long)ctx->data_end;
 
@@ -614,11 +587,9 @@ int encap(struct xdp_md *ctx)
     if(update_ethhdr_encap(eth, end) < 0)
         return XDP_DROP;
     
-    // copy cached->bytes in front of inner packet
     if(copy_cached_to_buffer(eth, cached, end) < 0)
         return XDP_DROP;
     
-    // update nexthdr based on version observed previously
     if(update_nxthdr(eth, end, version) < 0)
         return XDP_DROP;
 
