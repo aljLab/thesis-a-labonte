@@ -13,9 +13,9 @@
 CONSTANTS
 */
 
-#ifndef N
-#error "Compile with -DN=<number of service chains>"
-#endif
+/* #ifndef N
+#define N MAX_LANES
+#endif */
 
 #define MAX_LANES 8
 #define MAX_SEGMENTS 128
@@ -35,6 +35,13 @@ CONSTANTS
 #define MAX_FIXED_HDR_LEN_GLOBAL 40 // max(MAX_L3_HDR_BYTES, MAX_L4_HDR_BYTES)
 #define L3_KEY_SIZE MAX_L3_HDR_BYTES
 #define L4_KEY_SIZE MAX_L4_HDR_BYTES
+
+/*
+CONSTANTS TO BE OVERWRITTEN AT LOAD TIME
+*/
+const volatile __u32 n = MAX_LANES;
+
+
 
 /*
 STRUCTS

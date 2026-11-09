@@ -182,12 +182,13 @@ int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *rx_time, __u32 *l
     __u32 NEW_SEG_LEN = n_seg;
     if(NEW_SEG_LEN < 1 || NEW_SEG_LEN > MAX_SEGMENTS)
         return -1;
-    __u32 n = N;
-    if(n > MAX_LANES)
-        n = MAX_LANES;
+
+    __u32 n_lanes = n;
+    if(n_lanes > MAX_LANES)
+        n_lanes = MAX_LANES;
     
     #pragma unroll
-    for(__u32 i = 0; i < n; i++){
+    for(__u32 i = 0; i < n_lanes; i++){
         __u32 key = i;
         struct sfc_t *sfc = bpf_map_lookup_elem(&sfc_lane_map, &key);
 
@@ -287,7 +288,7 @@ int update_eth_hdr(void *start, void *end, __u32 lane)
 
     // lookup mac addresses
     __u32 src_key = lane;
-    __u32 dst_key = N + lane;
+    __u32 dst_key = n + lane;
     struct mac_entry *src_mac = bpf_map_lookup_elem(&mac_addr_table, &src_key);
     struct mac_entry *dst_mac = bpf_map_lookup_elem(&mac_addr_table, &dst_key);
 

@@ -395,6 +395,21 @@ func runLaneBasedProxy(){
         log.Fatal("load base spec: ", err)
     }
 
+    // set map sizes + const volatile n depending on n
+    if(spec.Maps["srh_table"] == nil || spec.Maps["mac_addr_table"] == nil || spec.Maps["link_index_table"] == nil || spec.Maps["lane_table"] == nil || spec.Maps["sfc_lane_map"] == nil ){
+        log.Fatalf("At least one map is not present in the Spec. Aborting.")
+    }
+    
+    spec.Maps["srh_table"].MaxEntries = uint32(n)
+    spec.Maps["mac_addr_table"].MaxEntries = uint32(2*n + 2)
+    spec.Maps["link_index_table"].MaxEntries = uint32(2*n + 2)
+    spec.Maps["lane_table"].MaxEntries = uint32(n)
+    spec.Maps["sfc_lane_map"].MaxEntries = uint32(n)
+
+   if err := spec.Variables["n"].Set(uint32(n)); err != nil {
+       log.Fatal("set n: ", err)
+   }
+
     base, err := ebpf.NewCollectionWithOptions(
 		spec,
 		ebpf.CollectionOptions{
@@ -422,12 +437,11 @@ func runLaneBasedProxy(){
 
     // shared maps
     srhMap := base.Maps["srh_table"]
-    linkMap := base.Maps["link_index_table"]
-    macMap := base.Maps["mac_addr_table"]
-    laneMap := base.Maps["lane_table"]
-    tailcallMap := base.Maps["progs"]
-
-    sfcLaneMap := base.Maps["sfc_lane_map"]
+    linkMap := base.Maps["link_index_table"] // size 2n + 2
+    macMap := base.Maps["mac_addr_table"] // size 2n + 2
+    laneMap := base.Maps["lane_table"] // size n
+    sfcLaneMap := base.Maps["sfc_lane_map"] // size n
+    tailcallMap := base.Maps["progs"] 
 
     if srhMap == nil || linkMap == nil || macMap == nil {
         log.Fatal("expected shared BPF maps are missing")
@@ -595,4 +609,3 @@ func targetConfig() (includeDir, define string) {
         return "", ""
     }
 }
-

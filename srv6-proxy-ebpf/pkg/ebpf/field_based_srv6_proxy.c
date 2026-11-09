@@ -21,7 +21,7 @@ struct {
 // not modified by xdp programs
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 2*N + 2); 
+    __uint(max_entries, 4); 
     __type(key, __u32);
     __type(value, struct mac_entry); // the mac addresses fromVNF interface belonging to this lane 
 } mac_addr_table SEC(".maps");
@@ -29,7 +29,7 @@ struct {
 // not modified by xdp programs
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 2*N + 2);
+    __uint(max_entries, 4);
     __type(key, __u32);
     __type(value, __u32); // the associated toVNF interface to put out decapsulated traffic
 } link_index_table SEC(".maps");
