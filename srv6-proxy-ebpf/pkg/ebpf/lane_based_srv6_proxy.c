@@ -2,7 +2,7 @@
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, N);
+    __uint(max_entries, n);
     __type(key, __u32); // the lane (id'ing the SRv6 context) of the cached header
     __type(value, struct cached_outer); // the cached header structure (lock + len + IPv6 + SRH)
 } srh_table SEC(".maps");
@@ -10,7 +10,7 @@ struct {
 // not modified by xdp programs
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 2 * N + 2);
+    __uint(max_entries, 2 * n + 2);
     __type(key, __u32); // lane-dependent key associated with the fromVNF
     __type(value, struct mac_entry); // the mac addresses fromVNF interface belonging to this lane 
 } mac_addr_table SEC(".maps");
@@ -18,7 +18,7 @@ struct {
 // not modified by xdp programs
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 2 * N + 2);
+    __uint(max_entries, 2 * n + 2);
     __type(key, __u32); // the lane picked in decap
     __type(value, __u32); // the associated toVNF interface to put out decapsulated traffic
 } link_index_table SEC(".maps");
@@ -26,7 +26,7 @@ struct {
 // not modified by xdp programs
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, N);
+    __uint(max_entries, n);
     __type(key, __u32); // the interface index return traffic is received on
     __type(value, __u32); // the lane associated with this fromVNF interface
 } lane_table SEC(".maps");
@@ -34,7 +34,7 @@ struct {
 // per cpu map to store the sfc's momentarily occupying the lanes: { lane_index -> sfc }
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, N);
+    __uint(max_entries, n);
     __type(key, __u32); // lane idx
     __type(value, struct sfc_t); // age and content information on recently seen
 } sfc_lane_map SEC(".maps");
