@@ -365,8 +365,8 @@ int update_ethhdr_encap(struct ethhdr *eth, void *end)
     if((void *)(eth + 1) > end)
         return -1;
     
-    __u32 src_key = 2*N;
-    __u32 dst_key = 2*N + 1;
+    __u32 src_key = 2;
+    __u32 dst_key = 2 + 1;
 
     struct mac_entry *src = bpf_map_lookup_elem(&mac_addr_table, &src_key);
     struct mac_entry *dst = bpf_map_lookup_elem(&mac_addr_table, &dst_key);

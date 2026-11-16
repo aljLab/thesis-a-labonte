@@ -42,6 +42,12 @@ CONSTANTS TO BE OVERWRITTEN AT LOAD TIME
 const volatile __u32 n = MAX_LANES;
 
 
+/*
+DEFINE BARRIER_VAR in case libbpf helpers are not available
+*/
+#ifndef barrier_var
+#define barrier_var(var) asm volatile("" : "+r"(var))
+#endif
 
 /*
 STRUCTS
