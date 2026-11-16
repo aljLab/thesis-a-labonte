@@ -200,40 +200,42 @@ int copy_cached_to_buffer(struct ethhdr *eth, struct cached_outer *cached, void 
         return -1;
 
     bpf_spin_lock(&cached->lock);
-    // MAX_CACHED_HEADER = 2104 (sizeof(ipv6hdr) + sizeof(ipv6_sr_hdr) + max(segList)) bytes
+
     for(__u32 i = 0; i < MAX_CACHED_HDR / 8; i++){
         if(i >= len_64) break;
         if((void *)(dst + i + 1) > end){
             bpf_spin_unlock(&cached->lock);
             return -1;
         }
-
         __builtin_memcpy((void *)(dst + i), (void *)((__u64 *)cached->bytes + i), 8);
     }
 
-    // copy the leftover bytes indiviudally
-    #pragma unroll
-    for(__u32 i = 0; i < 8; i++){
-        if(i >= rest) break;
-        __u32 idx = len_64 * 8 + i;
-        if (idx >= MAX_CACHED_HDR) break;
-        __u8 *d = (__u8 *)dst + idx;
-        barrier_var(d);
-        if((void *) d + idx >= end) return -1;
-        *d = cached->bytes[idx];
-        /* char *dst_bytes = (char *) (dst + len_64); 
-        char *cached_bytes = (char *) (cached + len_64); 
-        if((void *)(dst_bytes + i + 1) > end){
+    // copy the leftover bytes individually
+    if(rest){
+        __u32 base = len_64 * 8;
+        barrier_var(base);                  // keeps clang from proving the check below redundant
+        if(base > MAX_CACHED_HDR - 8){      // never true for a valid len; bounds idx for the verifier
             bpf_spin_unlock(&cached->lock);
             return -1;
         }
-        dst_bytes[i] = cached_bytes[i]; */
-    }
-    bpf_spin_unlock(&cached->lock);
 
+        #pragma unroll
+        for(__u32 i = 0; i < 8; i++){
+            if(i >= rest) break;
+            __u32 idx = base + i;           // idx <= MAX_CACHED_HDR - 1
+            __u8 *d = (__u8 *)dst + idx;
+            barrier_var(d);
+            if((void *)d >= end){
+                bpf_spin_unlock(&cached->lock);
+                return -1;
+            }
+            *d = cached->bytes[idx];
+        }
+    }
+
+    bpf_spin_unlock(&cached->lock);
     return 0;
 }
-
 static __always_inline
 int update_ethhdr_encap(struct ethhdr *eth, void *end)
 {
