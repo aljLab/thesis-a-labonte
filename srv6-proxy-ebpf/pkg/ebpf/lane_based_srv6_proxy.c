@@ -187,7 +187,7 @@ int assign_lane(struct in6_addr *new_segs, __u32 n_seg, __u64 *rx_time, __u32 *l
     if(n_lanes > MAX_LANES)
         n_lanes = MAX_LANES;
     
-    #pragma unroll
+    // #pragma unroll
     for(__u32 i = 0; i < n_lanes; i++){
         __u32 key = i;
         struct sfc_t *sfc = bpf_map_lookup_elem(&sfc_lane_map, &key);
@@ -378,7 +378,7 @@ int copy_cached_to_buffer(struct ethhdr *eth, struct cached_outer *cached, void 
             return -1;
         }
 
-        #pragma unroll
+        // #pragma unroll
         for(__u32 i = 0; i < 8; i++){
             if(i >= rest) break;
             __u32 idx = base + i;           // idx <= MAX_CACHED_HDR - 1
