@@ -272,17 +272,29 @@ int update_nxthdr(struct ethhdr *eth, void *end, __u8 version)
         return -1;
     
     struct ipv6_sr_hdr *srh = (struct ipv6_sr_hdr *)(ip6 + 1);
-    if((void *)((char *)srh + 1) > end)
+    if((void *)(srh + 1) > end)
         return -1;
     
-    srh->nexthdr = version;
-    switch (version)
-    {
-    case 4:
+    __u32 srh_len = ((__u32)srh->hdrlen + 1) * 8;
+    if((void *) ((char *)srh + srh_len) > end)
+        return -1;
+    void *inner = (void *)srh + srh_len;
+
+    switch (version) {
+    case 4: {
+        struct iphdr *ip4 = inner;
+        if ((void *)(ip4 + 1) > end) return -1;
+        ip6->payload_len = bpf_htons(srh_len + bpf_ntohs(ip4->tot_len));
         srh->nexthdr = IPPROTO_IPIP;
         break;
-    case 6:
+    }
+    case 6: {
+        struct ipv6hdr *ip6i = inner;
+        if ((void *)(ip6i + 1) > end) return -1;
+        ip6->payload_len = bpf_htons(srh_len + 40 + bpf_ntohs(ip6i->payload_len));
         srh->nexthdr = IPPROTO_IPV6;
+        break;
+    }
     default:
         break;
     }
@@ -309,7 +321,7 @@ int decap(struct xdp_md *ctx)
         return XDP_DROP;
 
     if(filter_srv6_traffic(p) < 0)
-        return XDP_PASS;
+        return XDP_DROP;
 
     if(update_srh(p, end) < 0)
         return XDP_DROP;
