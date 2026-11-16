@@ -2,7 +2,7 @@
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, n);
+    __uint(max_entries, MAX_LANES);
     __type(key, __u32); // the lane (id'ing the SRv6 context) of the cached header
     __type(value, struct cached_outer); // the cached header structure (lock + len + IPv6 + SRH)
 } srh_table SEC(".maps");
@@ -10,7 +10,7 @@ struct {
 // not modified by xdp programs
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 2 * n + 2);
+    __uint(max_entries, 2 * MAX_LANES + 2);
     __type(key, __u32); // lane-dependent key associated with the fromVNF
     __type(value, struct mac_entry); // the mac addresses fromVNF interface belonging to this lane 
 } mac_addr_table SEC(".maps");
@@ -18,7 +18,7 @@ struct {
 // not modified by xdp programs
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 2 * n + 2);
+    __uint(max_entries, 2 * MAX_LANES + 2);
     __type(key, __u32); // the lane picked in decap
     __type(value, __u32); // the associated toVNF interface to put out decapsulated traffic
 } link_index_table SEC(".maps");
@@ -26,7 +26,7 @@ struct {
 // not modified by xdp programs
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, n);
+    __uint(max_entries, MAX_LANES);
     __type(key, __u32); // the interface index return traffic is received on
     __type(value, __u32); // the lane associated with this fromVNF interface
 } lane_table SEC(".maps");
@@ -34,7 +34,7 @@ struct {
 // per cpu map to store the sfc's momentarily occupying the lanes: { lane_index -> sfc }
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, n);
+    __uint(max_entries, MAX_LANES);
     __type(key, __u32); // lane idx
     __type(value, struct sfc_t); // age and content information on recently seen
 } sfc_lane_map SEC(".maps");
@@ -603,7 +603,7 @@ int encap(struct xdp_md *ctx)
         return XDP_DROP;
 
     // lookup index of dispatcher veth
-    key = 2*N; // per convention the dispatcher veths idx is at index <2N>
+    key = 2*n; // per convention the dispatcher veths idx is at index <2N>
     __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &key);
     if(!link_index)
         return XDP_DROP;
