@@ -186,20 +186,21 @@ int copy_cached_to_buffer(struct ethhdr *eth, struct cached_outer *cached, void 
 {
     if((void *)(eth + 1) > end)
         return -1;
+
     __u64 *dst = (__u64 *)(eth + 1);
-    if((void *)((char *)dst + cached->len) > end)
-        return -1;
 
     __u32 len = cached->len;
     if(len > MAX_CACHED_HDR)
         len = MAX_CACHED_HDR;
-    
-    __u32 len_64 = len/8;
-    __u32 rest = len%8;
+
+    __u32 len_64 = len / 8;
+    __u32 rest = len % 8;
+
+    if((void *)((char *)dst + len) > end)
+        return -1;
 
     bpf_spin_lock(&cached->lock);
     // MAX_CACHED_HEADER = 2104 (sizeof(ipv6hdr) + sizeof(ipv6_sr_hdr) + max(segList)) bytes
-    // copy cached header in 8-byte blocks fore efficiency
     for(__u32 i = 0; i < MAX_CACHED_HDR / 8; i++){
         if(i >= len_64) break;
         if((void *)(dst + i + 1) > end){
@@ -214,14 +215,19 @@ int copy_cached_to_buffer(struct ethhdr *eth, struct cached_outer *cached, void 
     #pragma unroll
     for(__u32 i = 0; i < 8; i++){
         if(i >= rest) break;
-        char *dst_bytes = (char *) (dst + len_64); 
-        char *cached_bytes = (char *) (dst + len_64); 
+        __u32 idx = len_64 * 8 + i;
+        if (idx >= MAX_CACHED_HDR) break;
+        __u8 *d = (__u8 *)dst + idx;
+        barrier_var(d);
+        if((void *) d + idx >= end) return -1;
+        *d = cached->bytes[idx];
+        /* char *dst_bytes = (char *) (dst + len_64); 
+        char *cached_bytes = (char *) (cached + len_64); 
         if((void *)(dst_bytes + i + 1) > end){
             bpf_spin_unlock(&cached->lock);
             return -1;
         }
-        dst_bytes[i] = cached_bytes[i];
-        //__builtin_memcpy((void *)((char *)dst + len_64*8 + i), (void *)((char *)cached->bytes + len_64*8 + i), 1);
+        dst_bytes[i] = cached_bytes[i]; */
     }
     bpf_spin_unlock(&cached->lock);
 
