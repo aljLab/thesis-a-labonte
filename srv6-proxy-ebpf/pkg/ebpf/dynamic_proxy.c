@@ -309,6 +309,9 @@ int decap(struct xdp_md *ctx)
     if(parse_packet(p, start, end) < 0)
         return XDP_DROP;
 
+    if(filter_srv6_traffic(p) < 0)
+        return XDP_PASS;
+
     if(update_srh(p, end) < 0)
         return XDP_DROP;
 
