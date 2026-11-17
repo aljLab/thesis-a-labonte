@@ -126,12 +126,12 @@ int update_cached_header(struct cached_outer *cached, char *hdr, __u32 *lane, __
     return 0;
 }
 
-static __always_inline
+/* static __always_inline
 int cp_ethhdr_in_front_of_inner(struct parsed_srh *p)
 {
     __builtin_memcpy((void *)((char *)p->eth + p->outer_len), (void *)p->eth, sizeof(struct ethhdr));
     return 0;
-}
+} */
 
 static __always_inline
 int update_eth_hdr(void *start, void *end, __u32 lane)
@@ -388,10 +388,15 @@ int decap(struct xdp_md *ctx)
     if(update_cached_header(cached, (char *)p->ip6, &lane, p->outer_len, end) < 0)
         return XDP_DROP;
 
-    if(cp_ethhdr_in_front_of_inner(p) < 0)
+    /* if(cp_ethhdr_in_front_of_inner(p) < 0)
         return XDP_DROP;
-    // TODO CHANGE IN OTHER PROXY ENCAPS
+    // TODO CHANGE IN OTHER PROXY ENCAPS */
     struct ethhdr *new_eth = (struct ethhdr *)((char *)p->eth + p->outer_len);
+    if((void *)(new_eth + 1) > end)
+        return XDP_DROP;
+    if((void *)(p->eth + 1) > end)
+        return XDP_DROP;
+    __builtin_memcpy((void *)new_eth, (void *)p->eth, sizeof(struct ethhdr));
     if(update_eth_hdr(new_eth, end, lane) < 0)
         return XDP_DROP;
 
@@ -471,7 +476,11 @@ int encap(struct xdp_md *ctx)
     return bpf_redirect(*link_index, 0);
 }
 
-#define MAX_ETH_L3_LEN (sizeof(struct ethhdr) + 40) // inner header is at most ETH plus 40 for IPv6 (ignoring IPv4 options)
+SEC("tc")
+int tc_decap(struct __sk_buff *skb)
+{
+
+}
 
 SEC("tc")
 int tc_encap(struct __sk_buff *skb)
@@ -483,7 +492,7 @@ int tc_encap(struct __sk_buff *skb)
     if(bpf_skb_pull_data(skb, pull_len) < 0)
         return TC_ACT_OK;
 
-	void *start = (void *)(long)skb->data;
+    void *start = (void *)(long)skb->data;
 	void *end = (void *)(long)skb->data_end;
 
     struct ethhdr *eth = start;
@@ -548,10 +557,15 @@ int tc_encap(struct __sk_buff *skb)
     if (ret)
         return TC_ACT_SHOT;
     
-    __u32 len = hlen;
+    __u64 len = hlen; // ned __u64 to keep clang from changing registers
     barrier_var(len);
-    if(len < 40 || MAX_CACHED_HDR < len)
+    if(len < 40)
         return TC_ACT_SHOT;
+
+    barrier_var(len);
+    if(MAX_CACHED_HDR < len)
+        return TC_ACT_SHOT;
+
     if(bpf_skb_store_bytes(skb, ETH_HLEN, scratch->bytes, len, 0) < 0){
         return TC_ACT_SHOT;
     }
