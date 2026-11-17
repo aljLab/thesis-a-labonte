@@ -85,7 +85,7 @@ int update_srh(struct parsed_srh *p, void *end)
         return -1;
     
     if(p->srh->segments_left < 1)
-        return XDP_PASS; // pass on, seems to be last segment which we can't handle
+        return -1;
     p->srh->segments_left--;
     __u8 index = p->srh->segments_left;
 
@@ -309,6 +309,36 @@ int update_nxthdr(struct ethhdr *eth, void *end, __u8 version)
     return 0;
 }
 
+/*
+DECAP FUNCTIONS (TC)
+*/
+static __always_inline
+int parse_srh_base(struct parsed_srh *p, void *start, void *end)
+{
+    p->eth = start;
+    if((void *)(p->eth + 1) > end)
+        return -1;
+
+    p->ip6 = (void *)(p->eth + 1);
+    if((void *)(p->ip6 + 1) > end)
+        return -1;
+
+    p->srh = (void *)(p->ip6 + 1);
+    if((void *)((char *)p->srh + 8) > end)  // only fixed-size base SRH
+        return -1;
+
+    __u8 hdr_ext_len = p->srh->hdrlen;
+    __u8 last_index = p->srh->first_segment;
+
+    p->srh_len = RH_SIZE + hdr_ext_len * 8;
+    if(p->srh_len > MAX_SRH_LEN)
+        return -1;
+
+    p->outer_len = sizeof(struct ipv6hdr) + p->srh_len;
+    p->n_segs = (__u32)last_index + 1;
+    
+    return 0;
+}
 
 /*
 ENCAP FUNCTIONS (TC)
@@ -388,9 +418,6 @@ int decap(struct xdp_md *ctx)
     if(update_cached_header(cached, (char *)p->ip6, &lane, p->outer_len, end) < 0)
         return XDP_DROP;
 
-    /* if(cp_ethhdr_in_front_of_inner(p) < 0)
-        return XDP_DROP;
-    // TODO CHANGE IN OTHER PROXY ENCAPS */
     struct ethhdr *new_eth = (struct ethhdr *)((char *)p->eth + p->outer_len);
     if((void *)(new_eth + 1) > end)
         return XDP_DROP;
@@ -479,18 +506,78 @@ int encap(struct xdp_md *ctx)
 SEC("tc")
 int tc_decap(struct __sk_buff *skb)
 {
+    // pull fixed size headers first and pass on non-SRv6 traffic
+    __u32 pull_len = MAX_ETH_L3_LEN_DECAP;
+    if (skb->len < MAX_ETH_L3_LEN_DECAP)
+		pull_len = skb->len;
+    
+    if(bpf_skb_pull_data(skb, pull_len) < 0)
+        return TC_ACT_UNSPEC;
 
+    void *start = (void *)(long)skb->data;
+    void *end = (void *)(long)skb->data_end;
+
+    struct parsed_srh parsed = {};
+    struct parsed_srh *p = &parsed;
+    if(parse_srh_base(p, start, end) < 0)
+        return TC_ACT_UNSPEC;
+
+    if(filter_srv6_traffic(p) < 0)
+        return TC_ACT_UNSPEC;
+    
+    if(update_srh(p, end) < 0)
+        return TC_ACT_SHOT; // modified the packet -> dropping from now on
+    
+    __u32 zero_key = 0;
+    struct cached_outer *cached;
+    cached = bpf_map_lookup_elem(&srh_table, &zero_key);
+    if(!cached)
+        return TC_ACT_SHOT;
+    
+    if(update_cached_header(cached, (char *)p->ip6, &zero_key, p->outer_len, end) < 0)
+        return TC_ACT_SHOT;
+    
+    // copy ethhdr in front of inner packet
+    struct ethhdr *new_eth = (struct ethhdr *)((char *)p->eth + p->outer_len); // new location of eth
+    if((void *)(new_eth + 1) > end)
+        return TC_ACT_SHOT;
+    if((void *)(p->eth + 1) > end)
+        return TC_ACT_SHOT;
+    __builtin_memcpy((void *)new_eth, (void *)p->eth, sizeof(struct ethhdr));
+    if(update_eth_hdr(new_eth, end, zero_key) < 0)
+        return TC_ACT_SHOT;
+    
+    if((void *)((__u8 *)new_eth + sizeof(struct ethhdr) + 1) > end)
+        return TC_ACT_SHOT;
+    
+    __u8 inner_version = *((__u8 *)new_eth + sizeof(struct ethhdr) + 1) >> 4;
+    __u8 flags = 0; // would ideally use BPF_F_ADJ_ROOM_DECAP_IPXIP6
+    if(inner_version == 4){
+        flags = BPF_F_ADJ_ROOM_DECAP_L3_IPV4;
+    } else {
+        flags = BPF_F_ADJ_ROOM_DECAP_L3_IPV4;
+    }
+    int ret = bpf_skb_adjust_room(skb, hlen, BPF_ADJ_ROOM_MAC, flags);
+    if (ret)
+        return TC_ACT_SHOT;
+
+    __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &zero_key);
+    
+    if(!link_index || !*link_index)
+        return XDP_DROP;
+
+    return bpf_redirect(*link_index, 0);
 }
 
 SEC("tc")
 int tc_encap(struct __sk_buff *skb)
 {
-    __u32 pull_len = MAX_ETH_L3_LEN;
-    if (skb->len < MAX_ETH_L3_LEN)
+    __u32 pull_len = MAX_ETH_L3_LEN_ENCAP;
+    if (skb->len < MAX_ETH_L3_LEN_ENCAP)
 		pull_len = skb->len;
     
     if(bpf_skb_pull_data(skb, pull_len) < 0)
-        return TC_ACT_OK;
+        return TC_ACT_UNSPEC;
 
     void *start = (void *)(long)skb->data;
 	void *end = (void *)(long)skb->data_end;
@@ -553,7 +640,7 @@ int tc_encap(struct __sk_buff *skb)
     // update SRH next header
     scratch->bytes[40] = (version == 4) ? IPPROTO_IPIP : IPPROTO_IPV6;
     
-    int ret = bpf_skb_adjust_room(skb, hlen, BPF_ADJ_ROOM_MAC, BPF_F_ADJ_ROOM_ENCAP_L3_IPV6); // lets see about the flags...
+    int ret = bpf_skb_adjust_room(skb, hlen, BPF_ADJ_ROOM_MAC, BPF_F_ADJ_ROOM_ENCAP_L3_IPV6);
     if (ret)
         return TC_ACT_SHOT;
     
