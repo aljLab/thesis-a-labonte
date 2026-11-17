@@ -506,13 +506,6 @@ int encap(struct xdp_md *ctx)
 SEC("tc")
 int tc_decap(struct __sk_buff *skb)
 {
-    bpf_printk(
-        "DECAP: len=%u gso_size=%u gso_segs=%u proto=0x%x",
-        skb->len,
-        skb->gso_size,
-        skb->gso_segs,
-        skb->protocol
-    );
     // pull fixed size headers first and pass on non-SRv6 traffic
     __u32 pull_len = MAX_ETH_L3_LEN_DECAP;
     if (skb->len < MAX_ETH_L3_LEN_DECAP)
@@ -532,7 +525,7 @@ int tc_decap(struct __sk_buff *skb)
         return TC_ACT_UNSPEC;
     
     if(update_srh(p, end) < 0)
-        return TC_ACT_SHOT; // modified the packet -> dropping from now on
+        return TC_ACT_SHOT; // modified the packet -> drop from now on
     __u32 zero_key = 0;
     struct cached_outer *cached;
     cached = bpf_map_lookup_elem(&srh_table, &zero_key);
@@ -572,26 +565,13 @@ int tc_decap(struct __sk_buff *skb)
     
     if(!link_index || !*link_index)
         return TC_ACT_SHOT;
-    bpf_printk(
-        "DECAP: len=%u gso_size=%u gso_segs=%u proto=0x%x",
-        skb->len,
-        skb->gso_size,
-        skb->gso_segs,
-        skb->protocol
-    );
+
     return bpf_redirect(*link_index, 0);
 }
 
 SEC("tc")
 int tc_encap(struct __sk_buff *skb)
 {
-    bpf_printk(
-        "ENCAP: len=%u gso_size=%u gso_segs=%u proto=0x%x",
-        skb->len,
-        skb->gso_size,
-        skb->gso_segs,
-        skb->protocol
-    );
     __u32 pull_len = MAX_ETH_L3_LEN_ENCAP;
     if (skb->len < MAX_ETH_L3_LEN_ENCAP)
 		pull_len = skb->len;
@@ -687,13 +667,6 @@ int tc_encap(struct __sk_buff *skb)
     __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &key);
     if(!link_index || !*link_index)
         return TC_ACT_SHOT;
-    bpf_printk(
-        "ENCAP: len=%u gso_size=%u gso_segs=%u proto=0x%x",
-        skb->len,
-        skb->gso_size,
-        skb->gso_segs,
-        skb->protocol
-    );
     return bpf_redirect(*link_index, 0);
 }
 
