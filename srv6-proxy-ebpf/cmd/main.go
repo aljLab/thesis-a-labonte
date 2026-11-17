@@ -163,13 +163,21 @@ func runDynamicProxy(){
     }
     defer decapLink.Close()
 
-    encapProg := base.Programs["encap"]
+    encapProg := base.Programs["tc_encap"]
     if encapProg == nil {
-        log.Fatal("encap program missing")
+        log.Fatal("tc_encap program missing")
     }
-    encapIndex := macIndexMappings[1].LinkIndex
+    /* encapIndex := macIndexMappings[1].LinkIndex
     encapLink, err := link.AttachXDP(link.XDPOptions{
         Program:   encapProg,
+        Interface: int(encapIndex),
+    }) */
+
+    encapIndex := macIndexMappings[1].LinkIndex
+
+    encapLink, err := link.AttachTCX(link.TCXOptions{
+        Program:   encapProg,
+        Attach:    ebpf.AttachTCXIngress,
         Interface: int(encapIndex),
     })
 
