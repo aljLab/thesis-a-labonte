@@ -23,6 +23,14 @@ struct {
     __type(value, __u32); // the associated toVNF interface to put out decapsulated traffic
 } link_index_table SEC(".maps");
 
+// init for each CPU with scratch space to update hdr in encap
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct scratch_outer);
+} encap_scratch_table SEC(".maps");
+
 
 /*
 DECAP FUNCTIONS
@@ -178,7 +186,7 @@ int filter_srv6_traffic(struct parsed_srh *p)
 }
 
 /*
-ENCAP FUNCTIONS
+ENCAP FUNCTIONS (XDP)
 */
 
 static __always_inline
@@ -303,6 +311,10 @@ int update_nxthdr(struct ethhdr *eth, void *end, __u8 version)
 
 
 /*
+ENCAP FUNCTIONS (TC)
+*/
+
+/*
 *
 eBPF PROGRAMS
 *
@@ -411,6 +423,106 @@ int encap(struct xdp_md *ctx)
     __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &key);
     if(!link_index || !*link_index)
         return XDP_DROP;
+
+    return bpf_redirect(*link_index, 0);
+}
+
+#define MAX_ETH_L3_LEN (sizeof(struct ethhdr) + 40) // inner header is at most ETH plus 40 for IPv6 (ignoring IPv4 options)
+
+SEC("tc")
+int tc_encap(struct __sk_buff *skb)
+{
+    __u32 pull_len = MAX_ETH_L3_LEN;
+    if (skb->len < MAX_ETH_L3_LEN)
+		pull_len = skb->len;
+    
+    if(bpf_skb_pull_data(skb, pull_len) < 0)
+        return TC_ACT_OK;
+
+	void *start = (void *)(long)skb->data;
+	void *end = (void *)(long)skb->data_end;
+
+    struct ethhdr *eth = start;
+    if((void *)(eth + 1) > end)
+        return TC_ACT_OK;
+    
+    __u8 *inner = (__u8 *)(eth + 1);
+    if((void *)(inner + 1) > end)
+        return TC_ACT_OK;
+
+    __u32 version = *(inner) >> 4;
+
+    // 1. pass non-IP / unknown; pull min(skb->len, ETH_HLEN+40)
+    if(version != 4 && version != 6)
+        return TC_ACT_UNSPEC;
+    
+    // 2. inner_len = skb->gso_size ? skb->len - ETH_HLEN : from inner hdr
+    __u32 inner_len = 0;
+    if(skb->gso_size != 0){
+        inner_len = skb->len - ETH_HLEN;
+    } else {
+        if(version == 4){
+            if(eth->h_proto != ETH_P_IP || (void *)(inner + 4) > end)
+                return TC_ACT_UNSPEC;
+            inner_len = (__u32)bpf_ntohs(*(__be16 *)(inner + 2))
+        } else {
+            if(eth->h_proto != ETH_P_IPV6 || (void *)(inner + 6) > end)
+                return TC_ACT_UNSPEC;
+            inner_len = (__u32)bpf_ntohs(*(__be16 *)(inner + 4)) + 40;
+        }
+    }
+
+    // 3. lookup cached header -> copy to scratch; patch SRH nexthdr,
+    //    outer payload_len (0 if > 65535)
+    __u32 map_key = 0;
+    struct scratch_outer *scratch = bpf_map_lookup_elem(&encap_scratch_table, &map_key);
+    if(!scratch)
+        return TC_ACT_UNSPEC;
+    
+    struct cached_outer *cached = bpf_map_lookup_elem(&srh_table, &map_key);
+    if(!cached)
+        return TC_ACT_UNSPEC;
+    
+    bpf_spin_lock(&cached->lock);
+    __builtin_memcpy((void *)scratch->bytes, (void *)cached->bytes, MAX_CACHED_HDR);
+    scratch->len = cached->len;
+    bpf_spin_unlock(&cached->lock);
+
+    __u32 hlen = scratch->len;
+    if (hlen < 40 || hlen > MAX_CACHED_HDR) return TC_ACT_UNSPEC;
+
+    // update outer header length
+    __u32 payload = hlen - 40 + inner_len;
+    __u16 plen = payload > 65535 ? 0 : (__u16)payload;
+    *(__be16 *)&scratch->bytes[4] = bpf_htons(plen);
+    
+    *(__be16 *)&outer_ip6[4] = bpf_htons(outer_len);
+
+    // update SRH next header
+    scratch->bytes[40] = (version == 4) ? IPPROTO_IPIP : IPPROTO_IPV6;
+    
+    ret = bpf_skb_adjust_room(skb, hlen, BPF_ADJ_ROOM_MAC, BPF_F_ADJ_ROOM_ENCAP_L3_IPV6); // lets see about the flags...
+    if (ret)
+        return TC_ACT_SHOT;
+
+    // 5. bpf_skb_store_bytes(skb, ETH_HLEN, scratch, hlen, 0);
+    // bounds check to prove a) skb can hold hlen bytes after eth and b) scratch->bytes holds at least hlen bytes?
+    if(bpf_skb_store_bytes(skb, ETH_HLEN, scratch->bytes, hlen, 0) < 0)
+        return TC_ACT_SHOT;
+
+    // do i need to pull data from the skb again here? Can the linearized part become fragmented after store_bytes?
+    start = (void *)(long)skb->data;
+	end = (void *)(long)skb->data_end;
+    
+    // 6. write eth h_proto, dmac, smac
+    if(update_ethhsr_encap(start, end) < 0)
+        return TC_ACT_SHOT;
+    
+    // 7. return bpf_redirect(oif, 0);
+    __u32 key = 2; // per convention the dispatcher veths idx is at index 2
+    __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &key);
+    if(!link_index || !*link_index)
+        return TC_ACT_SHOT;
 
     return bpf_redirect(*link_index, 0);
 }

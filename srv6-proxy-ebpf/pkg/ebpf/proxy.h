@@ -115,3 +115,8 @@ struct inner_l3_hdr {
 struct cached_outer_mock {
     __u8 bytes[sizeof(struct cached_outer)];
 };
+
+struct scratch_outer {
+    __u16 len;
+    __u8 bytes[MAX_CACHED_HDR];
+}

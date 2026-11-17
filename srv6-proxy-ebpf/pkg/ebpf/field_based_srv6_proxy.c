@@ -50,6 +50,7 @@ struct {
     __type(value, struct l4_mask_t); 
 } mask_table_l4 SEC(".maps");
 
+// is only read -> no locking required
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 1);
