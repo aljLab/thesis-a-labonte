@@ -148,16 +148,22 @@ func runDynamicProxy(){
     * Attach decap to dispatcher
 	*/
 
-    classifyProg := base.Programs["decap"]
+    classifyProg := base.Programs["tc_decap"]
     if classifyProg == nil {
         log.Fatal("decap program missing")
     }
 
     decapIndex := macIndexMappings[2].LinkIndex
-    decapLink, err := link.AttachXDP(link.XDPOptions{
+    // decapLink, err := link.AttachXDP(link.XDPOptions{
+    //     Program:   classifyProg,
+    //     Interface: int(decapIndex),
+    // })
+    decapLink, err := link.AttachTCX(link.TCXOptions{
         Program:   classifyProg,
+        Attach:    ebpf.AttachTCXIngress,
         Interface: int(decapIndex),
     })
+
     if err != nil {
         log.Fatal("attach classify prog (-> tailcall to decap): ", err)
     }

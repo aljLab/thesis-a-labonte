@@ -506,11 +506,17 @@ int encap(struct xdp_md *ctx)
 SEC("tc")
 int tc_decap(struct __sk_buff *skb)
 {
+    bpf_printk(
+        "DECAP: len=%u gso_size=%u gso_segs=%u proto=0x%x",
+        skb->len,
+        skb->gso_size,
+        skb->gso_segs,
+        skb->protocol
+    );
     // pull fixed size headers first and pass on non-SRv6 traffic
     __u32 pull_len = MAX_ETH_L3_LEN_DECAP;
     if (skb->len < MAX_ETH_L3_LEN_DECAP)
 		pull_len = skb->len;
-    
     if(bpf_skb_pull_data(skb, pull_len) < 0)
         return TC_ACT_UNSPEC;
 
@@ -527,7 +533,6 @@ int tc_decap(struct __sk_buff *skb)
     
     if(update_srh(p, end) < 0)
         return TC_ACT_SHOT; // modified the packet -> dropping from now on
-    
     __u32 zero_key = 0;
     struct cached_outer *cached;
     cached = bpf_map_lookup_elem(&srh_table, &zero_key);
@@ -536,7 +541,6 @@ int tc_decap(struct __sk_buff *skb)
     
     if(update_cached_header(cached, (char *)p->ip6, &zero_key, p->outer_len, end) < 0)
         return TC_ACT_SHOT;
-    
     // copy ethhdr in front of inner packet
     struct ethhdr *new_eth = (struct ethhdr *)((char *)p->eth + p->outer_len); // new location of eth
     if((void *)(new_eth + 1) > end)
@@ -544,34 +548,50 @@ int tc_decap(struct __sk_buff *skb)
     if((void *)(p->eth + 1) > end)
         return TC_ACT_SHOT;
     __builtin_memcpy((void *)new_eth, (void *)p->eth, sizeof(struct ethhdr));
-    if(update_eth_hdr(new_eth, end, zero_key) < 0)
-        return TC_ACT_SHOT;
-    
+
     if((void *)((__u8 *)new_eth + sizeof(struct ethhdr) + 1) > end)
         return TC_ACT_SHOT;
     
     __u8 inner_version = *((__u8 *)new_eth + sizeof(struct ethhdr) + 1) >> 4;
-    __u8 flags = 0; // would ideally use BPF_F_ADJ_ROOM_DECAP_IPXIP6
+    __u8 flags = BPF_F_ADJ_ROOM_FIXED_GSO; // would ideally use BPF_F_ADJ_ROOM_DECAP_IPXIP6
     if(inner_version == 4){
-        flags = BPF_F_ADJ_ROOM_DECAP_L3_IPV4;
+        flags |= BPF_F_ADJ_ROOM_DECAP_L3_IPV4;
     } else {
-        flags = BPF_F_ADJ_ROOM_DECAP_L3_IPV4;
+        flags |= BPF_F_ADJ_ROOM_DECAP_L3_IPV4;
     }
-    int ret = bpf_skb_adjust_room(skb, hlen, BPF_ADJ_ROOM_MAC, flags);
+    __u32 adjust_len = p->outer_len;
+    int ret = bpf_skb_adjust_room(skb, -adjust_len, BPF_ADJ_ROOM_MAC, flags);
     if (ret)
         return TC_ACT_SHOT;
-
+    
+    start = (void *)(long)skb->data;
+    end = (void *)(long)skb->data_end;
+    if(update_eth_hdr((struct ethhdr *)start, end, zero_key) < 0)
+        return TC_ACT_SHOT;
     __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &zero_key);
     
     if(!link_index || !*link_index)
-        return XDP_DROP;
-
+        return TC_ACT_SHOT;
+    bpf_printk(
+        "DECAP: len=%u gso_size=%u gso_segs=%u proto=0x%x",
+        skb->len,
+        skb->gso_size,
+        skb->gso_segs,
+        skb->protocol
+    );
     return bpf_redirect(*link_index, 0);
 }
 
 SEC("tc")
 int tc_encap(struct __sk_buff *skb)
 {
+    bpf_printk(
+        "ENCAP: len=%u gso_size=%u gso_segs=%u proto=0x%x",
+        skb->len,
+        skb->gso_size,
+        skb->gso_segs,
+        skb->protocol
+    );
     __u32 pull_len = MAX_ETH_L3_LEN_ENCAP;
     if (skb->len < MAX_ETH_L3_LEN_ENCAP)
 		pull_len = skb->len;
@@ -603,7 +623,7 @@ int tc_encap(struct __sk_buff *skb)
     } else {
         if(version == 4){
             if(eth->h_proto != bpf_htons(ETH_P_IP) || (void *)(inner + 4) > end){
-               return TC_ACT_UNSPEC;
+                return TC_ACT_UNSPEC;
             }
             inner_len = (__u32)bpf_ntohs(*(__be16 *)(inner + 2));
         } else {
@@ -621,14 +641,12 @@ int tc_encap(struct __sk_buff *skb)
     struct cached_outer *cached = bpf_map_lookup_elem(&srh_table, &map_key);
     if(!cached)
         return TC_ACT_UNSPEC;
-    
     if(copy_cached_to_scratch((__u64 *)scratch->bytes, cached) < 0){
         return TC_ACT_SHOT;
     }
     bpf_spin_lock(&cached->lock);
     scratch->len = cached->len;
     bpf_spin_unlock(&cached->lock);
-
     __u32 hlen = scratch->len;
     if (hlen < 40 || hlen > MAX_CACHED_HDR) return TC_ACT_UNSPEC;
 
@@ -669,7 +687,13 @@ int tc_encap(struct __sk_buff *skb)
     __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &key);
     if(!link_index || !*link_index)
         return TC_ACT_SHOT;
-
+    bpf_printk(
+        "ENCAP: len=%u gso_size=%u gso_segs=%u proto=0x%x",
+        skb->len,
+        skb->gso_size,
+        skb->gso_segs,
+        skb->protocol
+    );
     return bpf_redirect(*link_index, 0);
 }
 
