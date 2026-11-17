@@ -6,6 +6,7 @@
 #include <linux/tcp.h>
 #include <linux/udp.h>
 #include <linux/in.h>
+#include <linux/pkt_cls.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 
@@ -119,4 +120,4 @@ struct cached_outer_mock {
 struct scratch_outer {
     __u16 len;
     __u8 bytes[MAX_CACHED_HDR];
-}
+};

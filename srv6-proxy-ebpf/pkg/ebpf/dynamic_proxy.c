@@ -314,6 +314,57 @@ int update_nxthdr(struct ethhdr *eth, void *end, __u8 version)
 ENCAP FUNCTIONS (TC)
 */
 
+static __always_inline
+int copy_cached_to_scratch(__u64 *dst, struct cached_outer *cached, void *end)
+{
+
+    __u32 len = cached->len;
+    if(len > MAX_CACHED_HDR)
+        len = MAX_CACHED_HDR;
+
+    __u32 len_64 = len / 8;
+    __u32 rest = len % 8;
+
+    if((void *)((char *)dst + len) > end)
+        return -1;
+
+    bpf_spin_lock(&cached->lock);
+
+    for(__u32 i = 0; i < MAX_CACHED_HDR / 8; i++){
+        if(i >= len_64) break;
+        if((void *)(dst + i + 1) > end){
+            bpf_spin_unlock(&cached->lock);
+            return -1;
+        }
+        __builtin_memcpy((void *)(dst + i), (void *)((__u64 *)cached->bytes + i), 8);
+    }
+
+    // copy the leftover bytes individually
+    if(rest){
+        __u32 base = len_64 * 8;
+        barrier_var(base);                  // keeps clang from proving the check below redundant
+        if(base > MAX_CACHED_HDR - 8){      // never true for a valid len; bounds idx for the verifier
+            bpf_spin_unlock(&cached->lock);
+            return -1;
+        }
+
+        for(__u32 i = 0; i < 8; i++){
+            if(i >= rest) break;
+            __u32 idx = base + i;           // idx <= MAX_CACHED_HDR - 1
+            __u8 *d = (__u8 *)dst + idx;
+            barrier_var(d);
+            if((void *)d >= end){
+                bpf_spin_unlock(&cached->lock);
+                return -1;
+            }
+            *d = cached->bytes[idx];
+        }
+    }
+
+    bpf_spin_unlock(&cached->lock);
+    return 0;
+}
+
 /*
 *
 eBPF PROGRAMS
@@ -464,7 +515,7 @@ int tc_encap(struct __sk_buff *skb)
         if(version == 4){
             if(eth->h_proto != ETH_P_IP || (void *)(inner + 4) > end)
                 return TC_ACT_UNSPEC;
-            inner_len = (__u32)bpf_ntohs(*(__be16 *)(inner + 2))
+            inner_len = (__u32)bpf_ntohs(*(__be16 *)(inner + 2));
         } else {
             if(eth->h_proto != ETH_P_IPV6 || (void *)(inner + 6) > end)
                 return TC_ACT_UNSPEC;
@@ -484,7 +535,9 @@ int tc_encap(struct __sk_buff *skb)
         return TC_ACT_UNSPEC;
     
     bpf_spin_lock(&cached->lock);
-    __builtin_memcpy((void *)scratch->bytes, (void *)cached->bytes, MAX_CACHED_HDR);
+    // __builtin_memcpy((void *)scratch->bytes, (void *)cached->bytes, MAX_CACHED_HDR);
+    if(copy_cached_to_scratch((__u64 *)scratch->bytes, cached, end) < 0)
+        return TC_ACT_SHOT;
     scratch->len = cached->len;
     bpf_spin_unlock(&cached->lock);
 
@@ -495,13 +548,11 @@ int tc_encap(struct __sk_buff *skb)
     __u32 payload = hlen - 40 + inner_len;
     __u16 plen = payload > 65535 ? 0 : (__u16)payload;
     *(__be16 *)&scratch->bytes[4] = bpf_htons(plen);
-    
-    *(__be16 *)&outer_ip6[4] = bpf_htons(outer_len);
 
     // update SRH next header
     scratch->bytes[40] = (version == 4) ? IPPROTO_IPIP : IPPROTO_IPV6;
     
-    ret = bpf_skb_adjust_room(skb, hlen, BPF_ADJ_ROOM_MAC, BPF_F_ADJ_ROOM_ENCAP_L3_IPV6); // lets see about the flags...
+    int ret = bpf_skb_adjust_room(skb, hlen, BPF_ADJ_ROOM_MAC, BPF_F_ADJ_ROOM_ENCAP_L3_IPV6); // lets see about the flags...
     if (ret)
         return TC_ACT_SHOT;
 
@@ -515,7 +566,7 @@ int tc_encap(struct __sk_buff *skb)
 	end = (void *)(long)skb->data_end;
     
     // 6. write eth h_proto, dmac, smac
-    if(update_ethhsr_encap(start, end) < 0)
+    if(update_ethhdr_encap(start, end) < 0)
         return TC_ACT_SHOT;
     
     // 7. return bpf_redirect(oif, 0);
