@@ -526,9 +526,11 @@ int decap(struct xdp_md *ctx)
     if(update_cached_header(cached, (char *)p->ip6, &lane, p->outer_len, end) < 0)
         return XDP_DROP;
 
-    if(cp_ethhdr_in_front_of_inner(p))
+    if(cp_ethhdr_in_front_of_inner(p) < 0)
+        return XDP_DROP;
 
-    if(update_eth_hdr(p->eth, end, lane) < 0)
+    struct ethhdr *new_eth = (struct ethhdr *)((char *)p->eth + p->outer_len);
+    if(update_eth_hdr(new_eth, end, lane) < 0)
         return XDP_DROP;
 
     if(bpf_xdp_adjust_head(ctx, p->outer_len) < 0)

@@ -315,7 +315,7 @@ ENCAP FUNCTIONS (TC)
 */
 
 static __always_inline
-int copy_cached_to_scratch(__u64 *dst, struct cached_outer *cached, void *end)
+int copy_cached_to_scratch(__u64 *dst, struct cached_outer *cached)
 {
 
     __u32 len = cached->len;
@@ -325,17 +325,12 @@ int copy_cached_to_scratch(__u64 *dst, struct cached_outer *cached, void *end)
     __u32 len_64 = len / 8;
     __u32 rest = len % 8;
 
-    if((void *)((char *)dst + len) > end)
-        return -1;
+
 
     bpf_spin_lock(&cached->lock);
 
     for(__u32 i = 0; i < MAX_CACHED_HDR / 8; i++){
         if(i >= len_64) break;
-        if((void *)(dst + i + 1) > end){
-            bpf_spin_unlock(&cached->lock);
-            return -1;
-        }
         __builtin_memcpy((void *)(dst + i), (void *)((__u64 *)cached->bytes + i), 8);
     }
 
@@ -353,10 +348,6 @@ int copy_cached_to_scratch(__u64 *dst, struct cached_outer *cached, void *end)
             __u32 idx = base + i;           // idx <= MAX_CACHED_HDR - 1
             __u8 *d = (__u8 *)dst + idx;
             barrier_var(d);
-            if((void *)d >= end){
-                bpf_spin_unlock(&cached->lock);
-                return -1;
-            }
             *d = cached->bytes[idx];
         }
     }
@@ -397,9 +388,11 @@ int decap(struct xdp_md *ctx)
     if(update_cached_header(cached, (char *)p->ip6, &lane, p->outer_len, end) < 0)
         return XDP_DROP;
 
-    if(cp_ethhdr_in_front_of_inner(p))
-
-    if(update_eth_hdr(p->eth, end, lane) < 0)
+    if(cp_ethhdr_in_front_of_inner(p) < 0)
+        return XDP_DROP;
+    // TODO CHANGE IN OTHER PROXY ENCAPS
+    struct ethhdr *new_eth = (struct ethhdr *)((char *)p->eth + p->outer_len);
+    if(update_eth_hdr(new_eth, end, lane) < 0)
         return XDP_DROP;
 
     if(bpf_xdp_adjust_head(ctx, p->outer_len) < 0)
@@ -513,18 +506,17 @@ int tc_encap(struct __sk_buff *skb)
         inner_len = skb->len - ETH_HLEN;
     } else {
         if(version == 4){
-            if(eth->h_proto != ETH_P_IP || (void *)(inner + 4) > end)
-                return TC_ACT_UNSPEC;
+            if(eth->h_proto != bpf_htons(ETH_P_IP) || (void *)(inner + 4) > end){
+               return TC_ACT_UNSPEC;
+            }
             inner_len = (__u32)bpf_ntohs(*(__be16 *)(inner + 2));
         } else {
-            if(eth->h_proto != ETH_P_IPV6 || (void *)(inner + 6) > end)
+            if(eth->h_proto != bpf_htons(ETH_P_IPV6) || (void *)(inner + 6) > end)
                 return TC_ACT_UNSPEC;
             inner_len = (__u32)bpf_ntohs(*(__be16 *)(inner + 4)) + 40;
         }
     }
 
-    // 3. lookup cached header -> copy to scratch; patch SRH nexthdr,
-    //    outer payload_len (0 if > 65535)
     __u32 map_key = 0;
     struct scratch_outer *scratch = bpf_map_lookup_elem(&encap_scratch_table, &map_key);
     if(!scratch)
@@ -534,10 +526,10 @@ int tc_encap(struct __sk_buff *skb)
     if(!cached)
         return TC_ACT_UNSPEC;
     
-    bpf_spin_lock(&cached->lock);
-    // __builtin_memcpy((void *)scratch->bytes, (void *)cached->bytes, MAX_CACHED_HDR);
-    if(copy_cached_to_scratch((__u64 *)scratch->bytes, cached, end) < 0)
+    if(copy_cached_to_scratch((__u64 *)scratch->bytes, cached) < 0){
         return TC_ACT_SHOT;
+    }
+    bpf_spin_lock(&cached->lock);
     scratch->len = cached->len;
     bpf_spin_unlock(&cached->lock);
 
@@ -555,13 +547,15 @@ int tc_encap(struct __sk_buff *skb)
     int ret = bpf_skb_adjust_room(skb, hlen, BPF_ADJ_ROOM_MAC, BPF_F_ADJ_ROOM_ENCAP_L3_IPV6); // lets see about the flags...
     if (ret)
         return TC_ACT_SHOT;
-
-    // 5. bpf_skb_store_bytes(skb, ETH_HLEN, scratch, hlen, 0);
-    // bounds check to prove a) skb can hold hlen bytes after eth and b) scratch->bytes holds at least hlen bytes?
-    if(bpf_skb_store_bytes(skb, ETH_HLEN, scratch->bytes, hlen, 0) < 0)
+    
+    __u32 len = hlen;
+    barrier_var(len);
+    if(len < 40 || MAX_CACHED_HDR < len)
         return TC_ACT_SHOT;
+    if(bpf_skb_store_bytes(skb, ETH_HLEN, scratch->bytes, len, 0) < 0){
+        return TC_ACT_SHOT;
+    }
 
-    // do i need to pull data from the skb again here? Can the linearized part become fragmented after store_bytes?
     start = (void *)(long)skb->data;
 	end = (void *)(long)skb->data_end;
     
