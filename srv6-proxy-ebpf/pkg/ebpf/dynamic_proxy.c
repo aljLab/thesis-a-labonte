@@ -450,7 +450,7 @@ int encap(struct xdp_md *ctx)
 
     __u32 key = ctx->ingress_ifindex;
 
-    // always use the one cached entry for dyanmic proxying
+    // always use the one cached entry for dynamic proxying
     __u32 lookup_key = 0;
     struct cached_outer *cached = bpf_map_lookup_elem(&srh_table, &lookup_key);
     if(!cached)
