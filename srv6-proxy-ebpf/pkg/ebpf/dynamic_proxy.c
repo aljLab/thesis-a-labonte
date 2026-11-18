@@ -126,13 +126,6 @@ int update_cached_header(struct cached_outer *cached, char *hdr, __u32 *lane, __
     return 0;
 }
 
-/* static __always_inline
-int cp_ethhdr_in_front_of_inner(struct parsed_srh *p)
-{
-    __builtin_memcpy((void *)((char *)p->eth + p->outer_len), (void *)p->eth, sizeof(struct ethhdr));
-    return 0;
-} */
-
 static __always_inline
 int update_eth_hdr(void *start, void *end, __u32 lane)
 {
@@ -243,6 +236,7 @@ int copy_cached_to_buffer(struct ethhdr *eth, struct cached_outer *cached, void 
     bpf_spin_unlock(&cached->lock);
     return 0;
 }
+
 static __always_inline
 int update_ethhdr_encap(struct ethhdr *eth, void *end)
 {
@@ -312,6 +306,7 @@ int update_nxthdr(struct ethhdr *eth, void *end, __u8 version)
 /*
 DECAP FUNCTIONS (TC)
 */
+
 static __always_inline
 int parse_srh_base(struct parsed_srh *p, void *start, void *end)
 {
@@ -354,8 +349,6 @@ int copy_cached_to_scratch(__u64 *dst, struct cached_outer *cached)
 
     __u32 len_64 = len / 8;
     __u32 rest = len % 8;
-
-
 
     bpf_spin_lock(&cached->lock);
 
@@ -506,7 +499,6 @@ int encap(struct xdp_md *ctx)
 SEC("tc")
 int tc_decap(struct __sk_buff *skb)
 {
-    // pull fixed size headers first and pass on non-SRv6 traffic
     __u32 pull_len = MAX_ETH_L3_LEN_DECAP;
     if (skb->len < MAX_ETH_L3_LEN_DECAP)
 		pull_len = skb->len;
@@ -546,12 +538,26 @@ int tc_decap(struct __sk_buff *skb)
         return TC_ACT_SHOT;
     
     __u8 inner_version = *((__u8 *)new_eth + sizeof(struct ethhdr) + 1) >> 4;
-    __u8 flags = BPF_F_ADJ_ROOM_FIXED_GSO; // would ideally use BPF_F_ADJ_ROOM_DECAP_IPXIP6
-    if(inner_version == 4){
-        flags |= BPF_F_ADJ_ROOM_DECAP_L3_IPV4;
-    } else {
-        flags |= BPF_F_ADJ_ROOM_DECAP_L3_IPV4;
-    }
+    __u8 flags = 0;
+    // use correct flags to keep skb metadata intact
+    // for older kernels: without correct flags (IPv4 over SRv6) skb->protocol stays 0x86DD after decap
+    // this does not cause a problem if the packet metadata is not consumed between decap and NF output
+    #ifdef BPF_F_ADJ_ROOM_DECAP_IPXIP6
+        flags |= BPF_F_ADJ_ROOM_DECAP_IPXIP6;
+    #else
+        flags |= BPF_F_ADJ_ROOM_FIXED_GSO;
+
+        if (inner_version == 4) {
+    #ifdef BPF_F_ADJ_ROOM_DECAP_L3_IPV4
+            flags |= BPF_F_ADJ_ROOM_DECAP_L3_IPV4;
+    #endif
+        } else {
+    #ifdef BPF_F_ADJ_ROOM_DECAP_L3_IPV6
+            flags |= BPF_F_ADJ_ROOM_DECAP_L3_IPV6;
+    #endif
+        }
+    #endif
+
     __u32 adjust_len = p->outer_len;
     int ret = bpf_skb_adjust_room(skb, -adjust_len, BPF_ADJ_ROOM_MAC, flags);
     if (ret)
@@ -638,6 +644,7 @@ int tc_encap(struct __sk_buff *skb)
     // update SRH next header
     scratch->bytes[40] = (version == 4) ? IPPROTO_IPIP : IPPROTO_IPV6;
     
+    // encap flags are supported for kernel 5.1+
     int ret = bpf_skb_adjust_room(skb, hlen, BPF_ADJ_ROOM_MAC, BPF_F_ADJ_ROOM_ENCAP_L3_IPV6);
     if (ret)
         return TC_ACT_SHOT;
@@ -661,7 +668,7 @@ int tc_encap(struct __sk_buff *skb)
     // 6. write eth h_proto, dmac, smac
     if(update_ethhdr_encap(start, end) < 0)
         return TC_ACT_SHOT;
-    
+
     // 7. return bpf_redirect(oif, 0);
     __u32 key = 2; // per convention the dispatcher veths idx is at index 2
     __u32 *link_index = bpf_map_lookup_elem(&link_index_table, &key);
