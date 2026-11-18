@@ -35,6 +35,8 @@ control forward_control(
         const entries = {
             (32w1) : forward_to(2);
             (32w2) : forward_to(1);
+            (32w3) : forward_to(4);
+            (32w4) : forward_to(3);
         }
 
     }
