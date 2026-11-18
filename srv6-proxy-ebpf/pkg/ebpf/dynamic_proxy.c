@@ -537,26 +537,11 @@ int tc_decap(struct __sk_buff *skb)
     if((void *)((__u8 *)new_eth + sizeof(struct ethhdr) + 1) > end)
         return TC_ACT_SHOT;
     
-    __u8 inner_version = *((__u8 *)new_eth + sizeof(struct ethhdr) + 1) >> 4;
-    __u8 flags = 0;
-    // use correct flags to keep skb metadata intact
-    // for older kernels: without correct flags (IPv4 over SRv6) skb->protocol stays 0x86DD after decap
-    // this does not cause a problem if the packet metadata is not consumed between decap and NF output
-    #ifdef BPF_F_ADJ_ROOM_DECAP_IPXIP6
-        flags |= BPF_F_ADJ_ROOM_DECAP_IPXIP6;
-    #else
-        flags |= BPF_F_ADJ_ROOM_FIXED_GSO;
-
-        if (inner_version == 4) {
-    #ifdef BPF_F_ADJ_ROOM_DECAP_L3_IPV4
-            flags |= BPF_F_ADJ_ROOM_DECAP_L3_IPV4;
-    #endif
-        } else {
-    #ifdef BPF_F_ADJ_ROOM_DECAP_L3_IPV6
-            flags |= BPF_F_ADJ_ROOM_DECAP_L3_IPV6;
-    #endif
-        }
-    #endif
+    __u8 inner_version = *((__u8 *)new_eth + sizeof(struct ethhdr)) >> 4;
+    // TODO: use correct flags to keep skb metadata intact (for specific IML use case it works like this)
+    // requires kernel 6.3+, should actually be IPXIPV6
+   __u64 flags = PROXY_ADJ_ROOM_FIXED_GSO;
+    flags |= (inner_version == 4) ? PROXY_ADJ_ROOM_DECAP_L3_IPV4: PROXY_ADJ_ROOM_DECAP_L3_IPV6;
 
     __u32 adjust_len = p->outer_len;
     int ret = bpf_skb_adjust_room(skb, -adjust_len, BPF_ADJ_ROOM_MAC, flags);
@@ -598,22 +583,22 @@ int tc_encap(struct __sk_buff *skb)
 
     __u32 version = *(inner) >> 4;
 
-    // 1. pass non-IP / unknown; pull min(skb->len, ETH_HLEN+40)
     if(version != 4 && version != 6)
         return TC_ACT_UNSPEC;
     
-    // 2. inner_len = skb->gso_size ? skb->len - ETH_HLEN : from inner hdr
+    if(eth->h_proto != bpf_htons(ETH_P_IP) || eth->h_proto != bpf_htons(ETH_P_IPV6))
+        return TC_ACT_UNSPEC;
     __u32 inner_len = 0;
     if(skb->gso_size != 0){
         inner_len = skb->len - ETH_HLEN;
     } else {
         if(version == 4){
-            if(eth->h_proto != bpf_htons(ETH_P_IP) || (void *)(inner + 4) > end){
+            if((void *)(inner + 4) > end){
                 return TC_ACT_UNSPEC;
             }
             inner_len = (__u32)bpf_ntohs(*(__be16 *)(inner + 2));
         } else {
-            if(eth->h_proto != bpf_htons(ETH_P_IPV6) || (void *)(inner + 6) > end)
+            if((void *)(inner + 6) > end)
                 return TC_ACT_UNSPEC;
             inner_len = (__u32)bpf_ntohs(*(__be16 *)(inner + 4)) + 40;
         }

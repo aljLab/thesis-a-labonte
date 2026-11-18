@@ -116,7 +116,7 @@ int update_srh(struct parsed_srh *p, void *end)
         return -1;
     
     if(p->srh->segments_left < 1)
-        return XDP_PASS; // pass on, seems to be last segment which we can't handle
+        return -1;
     p->srh->segments_left--;
     __u8 index = p->srh->segments_left;
 
@@ -332,14 +332,13 @@ int filter_srv6_traffic(struct parsed_srh *p)
 ENCAP FUNCTIONS
 */
 static __always_inline
-int copy_cached_to_buffer(struct ethhdr *eth, struct cached_outer *cached, void *end)
+int copy_cached_to_buffer(struct ethhdr *eth, struct cached_outer *cached, void *end, __u32 len)
 {
     if((void *)(eth + 1) > end)
         return -1;
 
     __u64 *dst = (__u64 *)(eth + 1);
 
-    __u32 len = cached->len;
     if(len > MAX_CACHED_HDR)
         len = MAX_CACHED_HDR;
 
@@ -535,7 +534,7 @@ int decap(struct xdp_md *ctx)
     if((void *)(p->eth + 1) > end)
         return XDP_DROP;
     __builtin_memcpy((void *)new_eth, (void *)p->eth, sizeof(struct ethhdr));    
-    if(update_eth_hdr(p->eth, end, lane) < 0)
+    if(update_eth_hdr(new_eth, end, lane) < 0)
         return XDP_DROP;
 
     if(bpf_xdp_adjust_head(ctx, p->outer_len) < 0)
@@ -563,6 +562,18 @@ int encap(struct xdp_md *ctx)
         return XDP_DROP;
     
     __u8 version = *((__u8 *)(eth + 1)) >> 4;
+
+    if(version != 4 && version != 6)
+        return XDP_PASS;
+    
+    if(version == 4){
+        if(eth->h_proto != bpf_htons(ETH_P_IP)){
+            return XDP_PASS;
+        }
+    } else {
+        if(eth->h_proto != bpf_htons(ETH_P_IPV6))
+            return XDP_PASS;
+    }
 
     __u32 key = ctx->ingress_ifindex;
 
@@ -600,7 +611,7 @@ int encap(struct xdp_md *ctx)
     if(update_ethhdr_encap(eth, end) < 0)
         return XDP_DROP;
     
-    if(copy_cached_to_buffer(eth, cached, end) < 0)
+    if(copy_cached_to_buffer(eth, cached, end, len) < 0)
         return XDP_DROP;
 
     if(update_nxthdr(eth, end, version) < 0)

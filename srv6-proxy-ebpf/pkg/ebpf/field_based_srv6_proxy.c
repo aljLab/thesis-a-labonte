@@ -12,7 +12,7 @@ The ebpf program just loads and uses the maps to compute a key to index into the
 */
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, MAX_SRH_CACHE_ENTRIES);
     __type(key, struct srh_key);
     __type(value, struct cached_outer); // the cached header structure (lock + len + IPv6 + SRH)
@@ -23,7 +23,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 4); 
     __type(key, __u32);
-    __type(value, struct mac_entry); // the mac addresses fromVNF interface belonging to this lane 
+    __type(value, struct mac_entry);
 } mac_addr_table SEC(".maps");
 
 // not modified by xdp programs
@@ -31,7 +31,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 4);
     __type(key, __u32);
-    __type(value, __u32); // the associated toVNF interface to put out decapsulated traffic
+    __type(value, __u32);
 } link_index_table SEC(".maps");
 
 // not modified by xdp programs
@@ -71,11 +71,17 @@ int parse_srh(struct parsed_srh *p, void *start, void *end)
     p->ip6 = (void *)(p->eth + 1);
     if((void *)(p->ip6 + 1) > end)
         return -1;
+    
+    if(p->ip6->version != 6 || p->ip6->nexthdr != 43){
+        return 1;
+    }
 
     p->srh = (void *)(p->ip6 + 1);
     // check for fixed len routing header first [ NextHeader | HdrExtLen | RoutingType | SegmentsLeft ]
     if((void *)((char *)p->srh + 8) > end)  
         return -1;
+        
+    if(p->srh->type != 4) return 1;
 
     __u8 hdr_ext_len = p->srh->hdrlen;
     __u8 last_index = p->srh->first_segment;
@@ -207,7 +213,7 @@ int compute_srh_key(struct srh_key *key, void *start, void *end, char *inner_sta
     }
 
     if(l4_proto != IPPROTO_TCP && l4_proto != IPPROTO_UDP)
-        return -1;
+        return 1;
 
     struct l3_mask_t *l3_mask = bpf_map_lookup_elem(&mask_table_l3, inner_l3_version);
 
@@ -290,13 +296,6 @@ int update_cached_header(struct cached_outer *cached, char *hdr, __u32 len, void
     }
     bpf_spin_unlock(&cached->lock);
 
-    return 0;
-}
-
-static __always_inline
-int cp_ethhdr_in_front_of_inner(struct parsed_srh *p)
-{
-    __builtin_memcpy((void *)((char *)p->eth + p->outer_len), (void *)p->eth, sizeof(struct ethhdr));
     return 0;
 }
 
@@ -473,14 +472,18 @@ int proxy_ingress(struct xdp_md *ctx)
     void *end = (void *)(long)ctx->data_end;
     
     struct parsed_srh p;
-    if(parse_srh(&p, start, end) < 0)
-        return XDP_DROP;
+    int ret = parse_srh(&p, start, end);
+    if(ret < 0) return XDP_DROP;
+    if(ret > 0) return XDP_PASS;
+
     char *inner_start = (char *)((char *)p.srh + p.srh_len);
     struct srh_key key = {0};
 
     __u32 inner_l3_version = -1;
-    if(compute_srh_key(&key, start, end, inner_start, &inner_l3_version) < 0)
-        return XDP_DROP;
+    ret = compute_srh_key(&key, start, end, inner_start, &inner_l3_version);
+    if(ret < 0) return XDP_DROP;
+    if(ret > 0) return XDP_PASS;
+    
 
     if(update_srh(&p, end) < 0)
         return XDP_DROP;
@@ -501,10 +504,13 @@ int proxy_ingress(struct xdp_md *ctx)
     if(update_cached_header(cached, (char *)p.ip6, p.outer_len, end) < 0)
         return XDP_DROP;
 
-    if(cp_ethhdr_in_front_of_inner(&p) < 0)
-        return XDP_DROP;
-
     struct ethhdr *new_eth = (struct ethhdr *)((char *)p.eth + p.outer_len);
+    if((void *)(new_eth + 1) > end)
+        return XDP_DROP;
+    if((void *)(p.eth + 1) > end)
+        return XDP_DROP;
+    __builtin_memcpy((void *)new_eth, (void *)p.eth, sizeof(struct ethhdr));
+
     if(update_eth_hdr(new_eth, end) < 0)
         return XDP_DROP;
 
@@ -529,20 +535,34 @@ int proxy_egress(struct xdp_md *ctx)
 
     struct ethhdr *eth = start;
     if((void *)(eth + 1) > end)
-        return -1;
+        return XDP_DROP;
 
     char *inner_start = (char *)(eth + 1);
 
+    __u8 version = *(inner_start) >> 4;
+    if(version != 4 && version != 6)
+        return XDP_PASS;
+    
+    if(version == 4){
+        if(eth->h_proto != bpf_htons(ETH_P_IP)){
+            return XDP_PASS;
+        }
+    } else {
+        if(eth->h_proto != bpf_htons(ETH_P_IPV6))
+            return XDP_PASS;
+    }
+
     struct srh_key key = {0};
     __u32 inner_l3_version = -1;
-    if(compute_srh_key(&key, start, end, inner_start, &inner_l3_version) < 0 || inner_l3_version < 0)
-        return XDP_DROP;
+    int ret = compute_srh_key(&key, start, end, inner_start, &inner_l3_version);
+    if(ret > 0) return XDP_PASS;
+    if (ret < 0) return XDP_DROP;
     
     struct cached_outer *cached = bpf_map_lookup_elem(&srh_table, &key);
     if(!cached){
         return XDP_DROP; // if no entry is found, something must have gone wrong -> drop the packet
     }
-
+    if(cached->len < sizeof(struct ipv6hdr) + 8) return XDP_DROP;
     __u32 len = cached->len;
     if (len > MAX_CACHED_HDR)
         len = MAX_CACHED_HDR;

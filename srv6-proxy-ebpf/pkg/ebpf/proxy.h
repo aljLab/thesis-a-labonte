@@ -14,9 +14,12 @@
 CONSTANTS
 */
 
-/* #ifndef N
-#define N MAX_LANES
-#endif */
+/* Values from include/uapi/linux/bpf.h (enum of BPF_F_ADJ_ROOM_*). */
+#define PROXY_ADJ_ROOM_FIXED_GSO       (1ULL << 0)
+#define PROXY_ADJ_ROOM_ENCAP_L3_IPV6   (1ULL << 2)
+#define PROXY_ADJ_ROOM_NO_CSUM_RESET   (1ULL << 5)
+#define PROXY_ADJ_ROOM_DECAP_L3_IPV4   (1ULL << 7)   /* kernel >= 6.3 */
+#define PROXY_ADJ_ROOM_DECAP_L3_IPV6   (1ULL << 8)   /* kernel >= 6.3 */
 
 #define MAX_LANES 8
 #define MAX_SEGMENTS 128
