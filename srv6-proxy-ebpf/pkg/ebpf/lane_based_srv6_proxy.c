@@ -273,13 +273,6 @@ int update_cached_header(struct cached_outer *cached, char *hdr, __u32 *lane, __
 }
 
 static __always_inline
-int cp_ethhdr_in_front_of_inner(struct parsed_srh *p)
-{
-    __builtin_memcpy((void *)((char *)p->eth + p->outer_len), (void *)p->eth, sizeof(struct ethhdr));
-    return 0;
-}
-
-static __always_inline
 int update_eth_hdr(void *start, void *end, __u32 lane)
 {
     struct ethhdr *eth = start;
@@ -325,11 +318,9 @@ int filter_srv6_traffic(struct parsed_srh *p)
 {
     __u8 version = *((__u8 *)(p->ip6)) >> 4;
     if(version != 6){
-        bpf_printk("Filtered non-ipv6 traffic");
         return -1;
     }
     if(p->ip6->nexthdr != 43){
-        bpf_printk("Filtered non-SRv6 ipv6 traffic");
         return -1;
     }
     if(p->ip6->hop_limit < 2)
@@ -526,11 +517,13 @@ int decap(struct xdp_md *ctx)
     if(update_cached_header(cached, (char *)p->ip6, &lane, p->outer_len, end) < 0)
         return XDP_DROP;
 
-    if(cp_ethhdr_in_front_of_inner(p) < 0)
-        return XDP_DROP;
-
     struct ethhdr *new_eth = (struct ethhdr *)((char *)p->eth + p->outer_len);
-    if(update_eth_hdr(new_eth, end, lane) < 0)
+    if((void *)(new_eth + 1) > end)
+        return XDP_DROP;
+    if((void *)(p->eth + 1) > end)
+        return XDP_DROP;
+    __builtin_memcpy((void *)new_eth, (void *)p->eth, sizeof(struct ethhdr));    
+    if(update_eth_hdr(p->eth, end, lane) < 0)
         return XDP_DROP;
 
     if(bpf_xdp_adjust_head(ctx, p->outer_len) < 0)
@@ -540,7 +533,6 @@ int decap(struct xdp_md *ctx)
     
     if(!link_index || !*link_index)
         return XDP_DROP;
-
     return bpf_redirect(*link_index, 0);
 }
 
@@ -567,7 +559,6 @@ int encap(struct xdp_md *ctx)
     
     if(!lane)
         return XDP_DROP;
-
     struct cached_outer *cached = bpf_map_lookup_elem(&srh_table, lane);
     if(!cached)
         return XDP_DROP;
@@ -592,7 +583,6 @@ int encap(struct xdp_md *ctx)
         return XDP_DROP;
 
     __builtin_memcpy(start, eth, sizeof(struct ethhdr));
-
     eth = (struct ethhdr *)start;
 
     if(update_ethhdr_encap(eth, end) < 0)
@@ -600,7 +590,7 @@ int encap(struct xdp_md *ctx)
     
     if(copy_cached_to_buffer(eth, cached, end) < 0)
         return XDP_DROP;
-    
+
     if(update_nxthdr(eth, end, version) < 0)
         return XDP_DROP;
 
