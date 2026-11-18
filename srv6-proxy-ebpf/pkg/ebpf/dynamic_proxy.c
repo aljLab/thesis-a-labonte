@@ -583,11 +583,10 @@ int tc_encap(struct __sk_buff *skb)
 
     __u32 version = *(inner) >> 4;
 
-    if(version != 4 && version != 6)
+    __be16 proto = eth->h_proto;
+    if(!((version == 4 && proto == bpf_htons(ETH_P_IP)) || (version == 6 && proto == bpf_htons(ETH_P_IPV6))))
         return TC_ACT_UNSPEC;
     
-    if(eth->h_proto != bpf_htons(ETH_P_IP) || eth->h_proto != bpf_htons(ETH_P_IPV6))
-        return TC_ACT_UNSPEC;
     __u32 inner_len = 0;
     if(skb->gso_size != 0){
         inner_len = skb->len - ETH_HLEN;
