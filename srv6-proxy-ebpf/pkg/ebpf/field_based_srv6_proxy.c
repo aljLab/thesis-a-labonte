@@ -11,11 +11,15 @@ The user space loader configures and calculates the masks based on state in the 
 The ebpf program just loads and uses the maps to compute a key to index into the srh_table.
 */
 
+#define MAX_READ_RETRIES 8
+#define REFRESH_RATE HZ // refresh every ~second
+#define READ_ONCE(x) (*(volatile typeof(x) *)&(x))
+
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, MAX_SRH_CACHE_ENTRIES);
     __type(key, struct srh_key);
-    __type(value, struct cached_outer); // the cached header structure (lock + len + IPv6 + SRH)
+    __type(value, struct cached_outer_seq);
 } srh_table SEC(".maps");
 
 // not modified by xdp programs
@@ -273,90 +277,163 @@ int update_srh(struct parsed_srh *p, void *end)
 }
 
 static __always_inline
-int update_cached_header(struct cached_outer *cached, char *hdr, __u32 len, void *end)
+int update_cached_header(struct cached_outer_seq *cached, char *hdr, __u32 len, void *end, struct xdp_md *ctx)
 {
-    if(len > MAX_CACHED_HDR)
+    if(len < 40 || len > MAX_CACHED_HDR)
         return -1;
+    barrier_var(len);
     if(sizeof(cached->bytes) < len) // check capacity (not actual length)
         return -1;
     if((void *)(hdr + len) > end)
         return -1;
 
-    bpf_spin_lock(&cached->lock);
+    // bpf_spin_lock(&cached->lock);
+    // __sync_fetch_and_add(&cached->seq, 1); // seq % 2 != 0 -> cache is being written
+    __u32 s = READ_ONCE(cached->seq);
+    // concurrent writer could increase cached->seq here
+    if(s % 2 != 0)
+        return 0; // skip writing because entry is being written
+    // 
+    __u32 old_s = __sync_val_compare_and_swap(&cached->seq, s, s+1);
+    // check if cached->seq has been changed in the meantime (CAS failed)
+    if(old_s != s)
+        return 0;
+    
+    // update cached entry
+    if(bpf_xdp_load_bytes(ctx, ETH_HLEN, (void *)cached->bytes, len) < 0){
+        __sync_fetch_and_add(&cached->seq, 1);
+        return -1;
+    }
     cached->len = len;
-
-    for(__u32 i = 0; i < MAX_SRH_LEN + sizeof(struct ipv6hdr); i++){
+    cached->last_seen = bpf_jiffies64();
+    /* for(__u32 i = 0; i < MAX_SRH_LEN + sizeof(struct ipv6hdr); i++){
         if(i >= len)
             break;
         if((void *)(hdr + i + 1) > end){
-            bpf_spin_unlock(&cached->lock);
+            __sync_fetch_and_add(&cached->seq, 1);
             return -1;
         }
         cached->bytes[i] = hdr[i];
-    }
-    bpf_spin_unlock(&cached->lock);
-
+    } */
+    
+    //bpf_spin_unlock(&cached->lock);
+    __sync_fetch_and_add(&cached->seq, 1);
     return 0;
 }
+
+/* static __always_inline
+int segs_equal(struct cached_outer_seq *c, struct parsed_srh *p, void *end)
+{
+    __u32 len = p->outer_len;
+    if (READ_ONCE(c->len) != len || len < 48)
+        return 0;
+
+    const __u8 *hdr = (const __u8 *)p->ip6;
+    if((void *)(hdr + len) > end)
+        return 0;
+
+    // check segLeft first
+    if(c->bytes[43] != hdr[43])
+        return 0;
+
+    const __u64 *a = (const __u64 *)(c->bytes + 48);
+    const __u64 *b = (const __u64 *)(hdr + 48);
+    __u32 words = (len - 48) / 8;
+
+    if(words > MAX_SEGMENTS * 2) return 0;
+    // ensure the present segments fit the 
+    if(48 + words*8 > sizeof(c->bytes))
+        return 0; // if more segments than cache entry can hold -> skip updating because corrupted state
+
+    #pragma unroll
+    for (__u32 i = 0; i < MAX_SEGMENTS * 2; i++) {
+        if (i >= words)
+            break;
+        if ((void *)(b + i + 1) > end)
+            return 0;
+        if (a[i] != b[i])
+            return 0;
+    }
+    return 1;
+} */
 
 /*
 ENCAP FUNCTIONS
 */
 
 static __always_inline
-int copy_cached_to_buffer(struct ethhdr *eth, struct cached_outer *cached, void *end)
+int copy_cached_to_buffer(struct ethhdr *eth, struct cached_outer_seq *cached, void *end, __u32 len, struct xdp_md *ctx)
 {
     if((void *)(eth + 1) > end)
         return -1;
 
-    __u64 *dst = (__u64 *)(eth + 1);
+    // __u64 *dst = (__u64 *)(eth + 1);
 
-    __u32 len = cached->len;
     if(len > MAX_CACHED_HDR)
         len = MAX_CACHED_HDR;
+    if(len < 40)
+        return -1;
+    barrier_var(len);
 
-    __u32 len_64 = len / 8;
-    __u32 rest = len % 8;
+    /* __u32 len_64 = len / 8;
+    __u32 rest = len % 8; */
 
     if((void *)((char *)dst + len) > end)
         return -1;
 
-    bpf_spin_lock(&cached->lock);
+    // bpf_spin_lock(&cached->lock);
 
-    for(__u32 i = 0; i < MAX_CACHED_HDR / 8; i++){
-        if(i >= len_64) break;
-        if((void *)(dst + i + 1) > end){
-            bpf_spin_unlock(&cached->lock);
+    for(int r = 1; r <= MAX_READ_RETRIES; r++){
+        __u32 seq = READ_ONCE(cached->seq);
+        // dont even attempt to read if seq unequal (data is currently written)
+        if(seq & 1)
+            continue;
+        if (READ_ONCE(cached->len) != len)
             return -1;
-        }
-        __builtin_memcpy((void *)(dst + i), (void *)((__u64 *)cached->bytes + i), 8);
-    }
-
-    // copy the leftover bytes individually
-    if(rest){
-        __u32 base = len_64 * 8;
-        barrier_var(base);                  // keeps clang from proving the check below redundant
-        if(base > MAX_CACHED_HDR - 8){      // never true for a valid len; bounds idx for the verifier
-            bpf_spin_unlock(&cached->lock);
-            return -1;
-        }
-
-        // #pragma unroll
-        for(__u32 i = 0; i < 8; i++){
-            if(i >= rest) break;
-            __u32 idx = base + i;           // idx <= MAX_CACHED_HDR - 1
-            __u8 *d = (__u8 *)dst + idx;
-            barrier_var(d);
-            if((void *)d >= end){
-                bpf_spin_unlock(&cached->lock);
+        /* for(__u32 i = 0; i < MAX_CACHED_HDR / 8; i++){
+            if(i >= len_64) break;
+            if((void *)(dst + i + 1) > end){
+                // bpf_spin_unlock(&cached->lock);
                 return -1;
             }
-            *d = cached->bytes[idx];
+            __builtin_memcpy((void *)(dst + i), (void *)((__u64 *)cached->bytes + i), 8);
         }
+
+        // copy the leftover bytes individually
+        if(rest){
+            __u32 base = len_64 * 8;
+            barrier_var(base);                  // keeps clang from proving the check below redundant
+            if(base > MAX_CACHED_HDR - 8){      // never 1 for a valid len; bounds idx for the verifier
+                //bpf_spin_unlock(&cached->lock);
+                return -1;
+            }
+
+            // #pragma unroll
+            for(__u32 i = 0; i < 8; i++){
+                if(i >= rest) break;
+                __u32 idx = base + i;           // idx <= MAX_CACHED_HDR - 1
+                __u8 *d = (__u8 *)dst + idx;
+                barrier_var(d);
+                if((void *)d >= end){
+                    // bpf_spin_unlock(&cached->lock);
+                    return -1;
+                }
+                *d = cached->bytes[idx];
+            }
+        } */
+        if(bpf_xdp_store_bytes(ctx, ETH_HLEN, cached->bytes, len) < 0)
+            return -1;
+
+        // check if seq stayed the same during read
+        if(READ_ONCE(cached->seq) == seq){
+            return 0;
+        }
+        if(r == MAX_READ_RETRIES)
+            return -1;
     }
 
-    bpf_spin_unlock(&cached->lock);
-    return 0;
+    // bpf_spin_unlock(&cached->lock);
+    return -1;
 }
 
 static __always_inline
@@ -471,7 +548,7 @@ int proxy_ingress(struct xdp_md *ctx)
     void *start = (void *)(long)ctx->data;
     void *end = (void *)(long)ctx->data_end;
     
-    struct parsed_srh p;
+    struct parsed_srh p = {};
     int ret = parse_srh(&p, start, end);
     if(ret < 0) return XDP_DROP;
     if(ret > 0) return XDP_PASS;
@@ -488,7 +565,7 @@ int proxy_ingress(struct xdp_md *ctx)
     if(update_srh(&p, end) < 0)
         return XDP_DROP;
 
-    struct cached_outer *cached;
+    struct cached_outer_seq *cached;
     cached = bpf_map_lookup_elem(&srh_table, &key);
     if(!cached){
         // not initialized -> zero init from scratch map to save stack space
@@ -501,8 +578,15 @@ int proxy_ingress(struct xdp_md *ctx)
         if(!cached)
             return XDP_DROP;
     }
-    if(update_cached_header(cached, (char *)p.ip6, p.outer_len, end) < 0)
-        return XDP_DROP;
+
+    // only write new cache entry if the segment list changed
+    /* if(!segs_equal(cached, &p, end)){
+    } */
+    // update only, if last update for this entry is older than REFRESH_RATE
+    if(bpf_jiffies64() - cached->last_seen > REFRESH_RATE){
+        if(update_cached_header(cached, (char *)p.ip6, p.outer_len, end, ctx) < 0)
+            return XDP_DROP;
+    }
 
     struct ethhdr *new_eth = (struct ethhdr *)((char *)p.eth + p.outer_len);
     if((void *)(new_eth + 1) > end)
@@ -558,14 +642,26 @@ int proxy_egress(struct xdp_md *ctx)
     if(ret > 0) return XDP_PASS;
     if (ret < 0) return XDP_DROP;
     
-    struct cached_outer *cached = bpf_map_lookup_elem(&srh_table, &key);
+    struct cached_outer_seq *cached = bpf_map_lookup_elem(&srh_table, &key);
     if(!cached){
         return XDP_DROP; // if no entry is found, something must have gone wrong -> drop the packet
     }
-    if(cached->len < sizeof(struct ipv6hdr) + 8) return XDP_DROP;
-    __u32 len = cached->len;
-    if (len > MAX_CACHED_HDR)
-        len = MAX_CACHED_HDR;
+
+    __u32 len = 0;
+    int ok = 0;
+
+    for (int r = 0; r < MAX_READ_RETRIES; r++) {
+        __u32 seq = READ_ONCE(cached->seq);
+        if (seq & 1)
+            continue;
+        len = READ_ONCE(cached->len);
+        if (READ_ONCE(cached->seq) != seq)
+            continue;
+        ok = 1;
+        break;
+    }
+
+    if (!ok || len < sizeof(struct ipv6hdr) + 8 || len > MAX_CACHED_HDR) return XDP_DROP;
     
     if(bpf_xdp_adjust_head(ctx, -(int)len) < 0)
         return XDP_DROP;
@@ -589,9 +685,12 @@ int proxy_egress(struct xdp_md *ctx)
     if(update_ethhdr_encap(eth, end) < 0)
         return XDP_DROP;
     
-    if(copy_cached_to_buffer(eth, cached, end) < 0)
+    if(copy_cached_to_buffer(eth, cached, end, len, ctx) < 0)
         return XDP_DROP;
-    
+
+    start = (void *)(long)ctx->data;
+    end   = (void *)(long)ctx->data_end;
+    eth   = start;
     if(update_nxthdr(eth, end, inner_l3_version) < 0)
         return XDP_DROP;
 
