@@ -12,7 +12,7 @@ The ebpf program just loads and uses the maps to compute a key to index into the
 */
 
 #define MAX_READ_RETRIES 8
-#define REFRESH_RATE HZ // refresh every ~second
+#define REFRESH_RATE 1024 // refresh every ~second (1024 jiffies)
 #define READ_ONCE(x) (*(volatile typeof(x) *)&(x))
 
 struct {
@@ -59,7 +59,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 1);
     __type(key, __u32);
-    __type(value, struct cached_outer_mock);
+    __type(value, struct cached_outer_seq);
 } scratch_table SEC(".maps");
 
 /*
@@ -378,8 +378,8 @@ int copy_cached_to_buffer(struct ethhdr *eth, struct cached_outer_seq *cached, v
     /* __u32 len_64 = len / 8;
     __u32 rest = len % 8; */
 
-    if((void *)((char *)dst + len) > end)
-        return -1;
+    // if((void *)((char *)dst + len) > end)
+    //     return -1;
 
     // bpf_spin_lock(&cached->lock);
 
@@ -623,6 +623,8 @@ int proxy_egress(struct xdp_md *ctx)
 
     char *inner_start = (char *)(eth + 1);
 
+    if((void *)(inner_start + 1) > end)
+        return XDP_PASS;
     __u8 version = *(inner_start) >> 4;
     if(version != 4 && version != 6)
         return XDP_PASS;

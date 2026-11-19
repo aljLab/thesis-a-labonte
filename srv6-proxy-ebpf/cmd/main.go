@@ -275,7 +275,7 @@ func runCorrelationBasedProxy(){
         log.Fatal("expected shared BPF maps are missing")
     }
 
-    zeroValue := make([]byte, cachedValueSize)
+    zeroValue := make([]byte, cachedValueSize + 8)
     if err := scratchMap.Put(uint32(0), zeroValue); err != nil {
         log.Fatal("initialize SRH scratch table entry: ", err)
     }
