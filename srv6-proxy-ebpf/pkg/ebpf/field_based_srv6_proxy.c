@@ -1,19 +1,26 @@
 #include "proxy.h"
 
 /*
-Version 4 of the eBPF Proxy. This version is not lane-based like version 3, but based on immutable header fields,
+This proxy version is based on immutable header fields,
 which uniquely identify a service chain.
 The key corresponding to one sfc (and stored SRH) are computed based on a mask_map for each supported Layer.
-In v4.0.1 support for L3 (IP6, IP4) and L4 (TCP, UDP) is built, but in an easily extensible way.
-The proxy relies on two mask_maps (mask_table_l3, mask_table_l4). The user space program and the eBPF program 
-must agree which index in the map corresponds to which mask (e.g. [ipv4_mask, ipv6_mask] in mask_table_l3).
+Currently, support for L3 (IP6, IP4) and L4 (TCP, UDP) is built.
+The proxy relies on two mask maps (mask_table_l3, mask_table_l4).
 The user space loader configures and calculates the masks based on state in the targets spec in the K8s api.
 The ebpf program just loads and uses the maps to compute a key to index into the srh_table.
+We use optimistic locking here to enable the use of a LRU hash map to offload eviction etc. to the kernel.
 */
 
-#define MAX_READ_RETRIES 8
-#define REFRESH_RATE 1024 // refresh every ~second (1024 jiffies)
+#define MAX_READ_RETRIES 4
+#define REFRESH_RATE 1024 // refresh cache every ~second (1024 jiffies)
+// use to keep compiler from merging variables which might have been changed by concurrent writers
 #define READ_ONCE(x) (*(volatile typeof(x) *)&(x))
+
+// kernel must be 5.18+
+#ifndef bpf_xdp_load_bytes
+static long (*bpf_xdp_load_bytes)(struct xdp_md *xdp_md, __u32 offset, void *buf, __u32 len) = (void *) 189;
+static long (*bpf_xdp_store_bytes)(struct xdp_md *xdp_md, __u32 offset, void *buf, __u32 len) = (void *) 190;
+#endif
 
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -81,7 +88,6 @@ int parse_srh(struct parsed_srh *p, void *start, void *end)
     }
 
     p->srh = (void *)(p->ip6 + 1);
-    // check for fixed len routing header first [ NextHeader | HdrExtLen | RoutingType | SegmentsLeft ]
     if((void *)((char *)p->srh + 8) > end)  
         return -1;
         
@@ -104,147 +110,62 @@ int parse_srh(struct parsed_srh *p, void *start, void *end)
     if((void *)((char *)p->srh->segments + (p->srh_len - 8)) > end)
         return -1;
     
-    p->n_segs = (__u32)last_index + 1; //number of segments in segments list
+    p->n_segs = (__u32)last_index + 1;
     
     return 0;
 }
 
-static __always_inline
-int parse_inner_ip4(struct iphdr *ip4, __u32 *l3_len, __u32 *l4_proto, void *end)
+static __always_inline int mask_n(const __u8 *hdr, const __u8 *mask, __u8 *dst, void *end, const __u32 n)
 {
-    if((void *)(ip4 + 1) > end)
+    if ((const void *)(hdr + n) > end)
         return -1;
-
-    *l3_len = (__u32)(ip4->ihl) * 4; 
-    *l4_proto = (__u32)ip4->protocol;
-    
+    barrier_var(hdr);
+    #pragma unroll
+    for (__u32 i = 0; i < n; i++)
+        dst[i] = mask[i] & hdr[i];
     return 0;
 }
 
 static __always_inline
-int parse_inner_ip6(struct ipv6hdr *ip6, __u32 *l3_len, __u32 *l4_proto, void *end)
+int compute_srh_key(struct srh_key *key, void *end, char *inner, __u32 *ver)
 {
-    if((void *)(ip6 + 1) > end)
-        return -1;
+    if ((void *)(inner + 1) > end) return -1;
+    __u32 version = *(__u8 *)inner >> 4;
+    *ver = version;
 
-    *l3_len = sizeof(struct ipv6hdr);
-    *l4_proto = (__u32)ip6->nexthdr;
-    
-    return 0;
-}
+    struct l3_mask_t *m3 = bpf_map_lookup_elem(&mask_table_l3, &version);
+    if (!m3) return -1;
 
-static __always_inline
-int parse_inner_l3(char *start, __u32 *inner_l3_version, __u32 *l3_len, __u32 *l4_proto, void *end)
-{
-    if((void *)(start + 1) > end){
-        return -1;
-    }
-
-    *inner_l3_version = *((__u8 *)start) >> 4;
-
-    switch (*inner_l3_version)
-    {
-    case 4:
-        if(parse_inner_ip4((struct iphdr *)start, l3_len, l4_proto, end) < 0)
-            return -1;
-        break;
-    case 6:
-        if(parse_inner_ip6((struct ipv6hdr *)start, l3_len, l4_proto, end) < 0)
-            return -1;
-        break;
-    
-    default:
-        break;
-    }
-
-    return 0;
-}
-
-// mask_hdr masks a header (at *hdr) with a mask (at *mask) and writes the result into a key field (at *key).
-// since key fields are always as big as the biggest header in this layer, mask_hdr writes zeros into the header 
-// to avoid garbage key values, e.g. resulting from reading 40 bytes (max_l4_hdr_size) from a pointer to a UDP header.
-static __always_inline
-int mask_hdr(__u8 *hdr, __u8 *mask, __u32 len, __u8 *dst, void *end, __u32 key_size)
-{   
-    if(key_size > MAX_FIXED_HDR_LEN_GLOBAL)
-        key_size = MAX_FIXED_HDR_LEN_GLOBAL;
-
-    for (__u32 i = 0; i < MAX_FIXED_HDR_LEN_GLOBAL; i++) {
-        if (i >= key_size){ // copy at most KEY_SIZE bytes -> skip options in IPv4/TCP
-            break;
-        }
-        if(i >= len){ // if actual header length < key_size, fill with zeros
-            dst[i] = 0;
-        } else {
-            if ((void *)(hdr + i + 1) > end) {
-                return -1;
-            }
-            dst[i] = mask[i] & hdr[i];
-        }
-    }
-    return 0;
-}
-
-static __always_inline
-int get_hdr_size_for_key_calc(__u32 l4_proto, __u32 *l4_key_size)
-{
-    switch (l4_proto)
-    {
-    case IPPROTO_TCP:
-        *l4_key_size = sizeof(struct tcphdr);
-        break;
-    case IPPROTO_UDP:
-        *l4_key_size = sizeof(struct udphdr);
-        break;
-    default:
-        break;
-    }
-
-    if(l4_key_size < 0)
-        return -1;
-    
-    return 0;
-}
-
-static __always_inline
-int compute_srh_key(struct srh_key *key, void *start, void *end, char *inner_start, __u32 *inner_l3_version)
-{
-    __u32 l3_len = 0;
-    __u32 l4_proto = 0; // should be 6 (TCP) or 17 (UDP)
-
-    if(parse_inner_l3(inner_start, inner_l3_version, &l3_len, &l4_proto, end) < 0 || l3_len <= 0){
+    __u32 proto, l3_len;
+    if (version == 4) {
+        struct iphdr *ip4 = (struct iphdr *)inner;
+        if ((void *)(ip4 + 1) > end) return -1;
+        l3_len = ip4->ihl * 4;
+        if (l3_len < 20) return -1;
+        proto = ip4->protocol;
+        if (proto != IPPROTO_TCP && proto != IPPROTO_UDP) return 1;
+        if (mask_n((__u8 *)inner, m3->bytes, key->l3, end, 20) < 0) return -1;
+    } else if (version == 6) {
+        struct ipv6hdr *ip6 = (struct ipv6hdr *)inner;
+        if ((void *)(ip6 + 1) > end) return -1;
+        l3_len = 40;
+        proto = ip6->nexthdr;
+        if (proto != IPPROTO_TCP && proto != IPPROTO_UDP) return 1;
+        if (mask_n((__u8 *)inner, m3->bytes, key->l3, end, 40) < 0) return -1;
+    } else {
         return -1;
     }
 
-    if(l4_proto != IPPROTO_TCP && l4_proto != IPPROTO_UDP)
-        return 1;
+    struct l4_mask_t *m4 = bpf_map_lookup_elem(&mask_table_l4, &proto);
+    if (!m4) return -1;
 
-    struct l3_mask_t *l3_mask = bpf_map_lookup_elem(&mask_table_l3, inner_l3_version);
-
-    if(!l3_mask)
-        return -1;
-    
-    if(mask_hdr((__u8 *)inner_start, (__u8 *)l3_mask->bytes, l3_len, (__u8 *)key->l3, end, L3_KEY_SIZE) < 0){
-        return -1;
-    }
-
-    if((void *)((char *)inner_start + l3_len) > end) // options are included in l3_len
-        return -1;
-    
-    char *start_l4 = (char *)((char *)inner_start + l3_len);
-
-    __u32 l4_key_size = -1;
-    if(get_hdr_size_for_key_calc(l4_proto, &l4_key_size) < 0 || l4_key_size < 0)
-        return -1;
-
-    struct l4_mask_t *l4_mask = bpf_map_lookup_elem(&mask_table_l4, &l4_proto);
-    if(!l4_mask)
-        return -1;
-
-    if(mask_hdr((__u8 *)start_l4, (__u8 *)l4_mask->bytes, l4_key_size, (__u8 *)key->l4, end, L4_KEY_SIZE) < 0)
-        return -1;
-    
-    return 0;
+    if(l3_len > 60) return -1;
+    __u8 *l4 = (__u8 *)inner + l3_len;
+    barrier_var(l4);
+    if ((void *)(l4 + 20) > end) return -1;
+    if (proto == IPPROTO_TCP)
+        return mask_n(l4, m4->bytes, key->l4, end, 20) < 0 ? -1 : 0;
+    return mask_n(l4, m4->bytes, key->l4, end, 8) < 0 ? -1 : 0;
 }
 
 /*
@@ -262,7 +183,7 @@ int update_srh(struct parsed_srh *p, void *end)
         return -1;
     
     if(p->srh->segments_left < 1)
-        return -1; // pass on, seems to be last segment which we can't handle
+        return -1;
     p->srh->segments_left--;
     __u8 index = p->srh->segments_left;
 
@@ -282,18 +203,15 @@ int update_cached_header(struct cached_outer_seq *cached, char *hdr, __u32 len, 
     if(len < 40 || len > MAX_CACHED_HDR)
         return -1;
     barrier_var(len);
-    if(sizeof(cached->bytes) < len) // check capacity (not actual length)
+    if(sizeof(cached->bytes) < len)
         return -1;
     if((void *)(hdr + len) > end)
         return -1;
 
-    // bpf_spin_lock(&cached->lock);
-    // __sync_fetch_and_add(&cached->seq, 1); // seq % 2 != 0 -> cache is being written
     __u32 s = READ_ONCE(cached->seq);
-    // concurrent writer could increase cached->seq here
     if(s % 2 != 0)
-        return 0; // skip writing because entry is being written
-    // 
+        return 0; // skip writing because entry is being actively written
+    // try to claim seq for writing
     __u32 old_s = __sync_val_compare_and_swap(&cached->seq, s, s+1);
     // check if cached->seq has been changed in the meantime (CAS failed)
     if(old_s != s)
@@ -305,69 +223,23 @@ int update_cached_header(struct cached_outer_seq *cached, char *hdr, __u32 len, 
         return -1;
     }
     cached->len = len;
-    cached->last_seen = bpf_jiffies64();
-    /* for(__u32 i = 0; i < MAX_SRH_LEN + sizeof(struct ipv6hdr); i++){
-        if(i >= len)
-            break;
-        if((void *)(hdr + i + 1) > end){
-            __sync_fetch_and_add(&cached->seq, 1);
-            return -1;
-        }
-        cached->bytes[i] = hdr[i];
-    } */
+    cached->last_seen = bpf_jiffies64(); 
     
-    //bpf_spin_unlock(&cached->lock);
     __sync_fetch_and_add(&cached->seq, 1);
     return 0;
 }
-
-/* static __always_inline
-int segs_equal(struct cached_outer_seq *c, struct parsed_srh *p, void *end)
-{
-    __u32 len = p->outer_len;
-    if (READ_ONCE(c->len) != len || len < 48)
-        return 0;
-
-    const __u8 *hdr = (const __u8 *)p->ip6;
-    if((void *)(hdr + len) > end)
-        return 0;
-
-    // check segLeft first
-    if(c->bytes[43] != hdr[43])
-        return 0;
-
-    const __u64 *a = (const __u64 *)(c->bytes + 48);
-    const __u64 *b = (const __u64 *)(hdr + 48);
-    __u32 words = (len - 48) / 8;
-
-    if(words > MAX_SEGMENTS * 2) return 0;
-    // ensure the present segments fit the 
-    if(48 + words*8 > sizeof(c->bytes))
-        return 0; // if more segments than cache entry can hold -> skip updating because corrupted state
-
-    #pragma unroll
-    for (__u32 i = 0; i < MAX_SEGMENTS * 2; i++) {
-        if (i >= words)
-            break;
-        if ((void *)(b + i + 1) > end)
-            return 0;
-        if (a[i] != b[i])
-            return 0;
-    }
-    return 1;
-} */
 
 /*
 ENCAP FUNCTIONS
 */
 
+// copies a cached header from an eBPF map (src) to the xdp_buffer (dst)
+// retries MAX_READ_RETRIES times to read the entry and drops otherwise
 static __always_inline
 int copy_cached_to_buffer(struct ethhdr *eth, struct cached_outer_seq *cached, void *end, __u32 len, struct xdp_md *ctx)
 {
     if((void *)(eth + 1) > end)
         return -1;
-
-    // __u64 *dst = (__u64 *)(eth + 1);
 
     if(len > MAX_CACHED_HDR)
         len = MAX_CACHED_HDR;
@@ -375,52 +247,14 @@ int copy_cached_to_buffer(struct ethhdr *eth, struct cached_outer_seq *cached, v
         return -1;
     barrier_var(len);
 
-    /* __u32 len_64 = len / 8;
-    __u32 rest = len % 8; */
-
-    // if((void *)((char *)dst + len) > end)
-    //     return -1;
-
-    // bpf_spin_lock(&cached->lock);
-
     for(int r = 1; r <= MAX_READ_RETRIES; r++){
         __u32 seq = READ_ONCE(cached->seq);
-        // dont even attempt to read if seq unequal (data is currently written)
+        // dont even attempt to read if seq unequal
         if(seq & 1)
             continue;
-        if (READ_ONCE(cached->len) != len)
+        if (READ_ONCE(cached->len) != len) // if cached->len was changed after making room for the header -> drop
             return -1;
-        /* for(__u32 i = 0; i < MAX_CACHED_HDR / 8; i++){
-            if(i >= len_64) break;
-            if((void *)(dst + i + 1) > end){
-                // bpf_spin_unlock(&cached->lock);
-                return -1;
-            }
-            __builtin_memcpy((void *)(dst + i), (void *)((__u64 *)cached->bytes + i), 8);
-        }
 
-        // copy the leftover bytes individually
-        if(rest){
-            __u32 base = len_64 * 8;
-            barrier_var(base);                  // keeps clang from proving the check below redundant
-            if(base > MAX_CACHED_HDR - 8){      // never 1 for a valid len; bounds idx for the verifier
-                //bpf_spin_unlock(&cached->lock);
-                return -1;
-            }
-
-            // #pragma unroll
-            for(__u32 i = 0; i < 8; i++){
-                if(i >= rest) break;
-                __u32 idx = base + i;           // idx <= MAX_CACHED_HDR - 1
-                __u8 *d = (__u8 *)dst + idx;
-                barrier_var(d);
-                if((void *)d >= end){
-                    // bpf_spin_unlock(&cached->lock);
-                    return -1;
-                }
-                *d = cached->bytes[idx];
-            }
-        } */
         if(bpf_xdp_store_bytes(ctx, ETH_HLEN, cached->bytes, len) < 0)
             return -1;
 
@@ -429,10 +263,9 @@ int copy_cached_to_buffer(struct ethhdr *eth, struct cached_outer_seq *cached, v
             return 0;
         }
         if(r == MAX_READ_RETRIES)
-            return -1;
+            return -1; // all tries failed -> drop
     }
 
-    // bpf_spin_unlock(&cached->lock);
     return -1;
 }
 
@@ -557,7 +390,7 @@ int proxy_ingress(struct xdp_md *ctx)
     struct srh_key key = {0};
 
     __u32 inner_l3_version = -1;
-    ret = compute_srh_key(&key, start, end, inner_start, &inner_l3_version);
+    ret = compute_srh_key(&key, end, inner_start, &inner_l3_version);
     if(ret < 0) return XDP_DROP;
     if(ret > 0) return XDP_PASS;
     
@@ -640,7 +473,7 @@ int proxy_egress(struct xdp_md *ctx)
 
     struct srh_key key = {0};
     __u32 inner_l3_version = -1;
-    int ret = compute_srh_key(&key, start, end, inner_start, &inner_l3_version);
+    int ret = compute_srh_key(&key, end, inner_start, &inner_l3_version);
     if(ret > 0) return XDP_PASS;
     if (ret < 0) return XDP_DROP;
     
