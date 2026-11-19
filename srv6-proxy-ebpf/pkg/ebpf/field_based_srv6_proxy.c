@@ -12,15 +12,15 @@ We use optimistic locking here to enable the use of a LRU hash map to offload ev
 */
 
 #define MAX_READ_RETRIES 4
-#define REFRESH_RATE 1024 // refresh cache every ~second (1024 jiffies)
+#define REFRESH_RATE 1024 // refresh cache every ~second (1024 jiffies), tune for performance
 // use to keep compiler from merging variables which might have been changed by concurrent writers
 #define READ_ONCE(x) (*(volatile typeof(x) *)&(x))
 
-// kernel must be 5.18+
-#ifndef bpf_xdp_load_bytes
-static long (*bpf_xdp_load_bytes)(struct xdp_md *xdp_md, __u32 offset, void *buf, __u32 len) = (void *) 189;
-static long (*bpf_xdp_store_bytes)(struct xdp_md *xdp_md, __u32 offset, void *buf, __u32 len) = (void *) 190;
-#endif
+// comment these out if running on a kernel 5.18+ with older UAPI headers
+// #ifndef bpf_xdp_load_bytes
+// static long (*bpf_xdp_load_bytes)(struct xdp_md *xdp_md, __u32 offset, void *buf, __u32 len) = (void *) 189;
+// static long (*bpf_xdp_store_bytes)(struct xdp_md *xdp_md, __u32 offset, void *buf, __u32 len) = (void *) 190;
+// #endif
 
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -132,10 +132,8 @@ int compute_srh_key(struct srh_key *key, void *end, char *inner, __u32 *ver)
     if ((void *)(inner + 1) > end) return -1;
     __u32 version = *(__u8 *)inner >> 4;
     *ver = version;
-
     struct l3_mask_t *m3 = bpf_map_lookup_elem(&mask_table_l3, &version);
     if (!m3) return -1;
-
     __u32 proto, l3_len;
     if (version == 4) {
         struct iphdr *ip4 = (struct iphdr *)inner;
@@ -155,14 +153,11 @@ int compute_srh_key(struct srh_key *key, void *end, char *inner, __u32 *ver)
     } else {
         return -1;
     }
-
     struct l4_mask_t *m4 = bpf_map_lookup_elem(&mask_table_l4, &proto);
     if (!m4) return -1;
-
     if(l3_len > 60) return -1;
     __u8 *l4 = (__u8 *)inner + l3_len;
     barrier_var(l4);
-    if ((void *)(l4 + 20) > end) return -1;
     if (proto == IPPROTO_TCP)
         return mask_n(l4, m4->bytes, key->l4, end, 20) < 0 ? -1 : 0;
     return mask_n(l4, m4->bytes, key->l4, end, 8) < 0 ? -1 : 0;
@@ -393,21 +388,22 @@ int proxy_ingress(struct xdp_md *ctx)
     ret = compute_srh_key(&key, end, inner_start, &inner_l3_version);
     if(ret < 0) return XDP_DROP;
     if(ret > 0) return XDP_PASS;
-    
 
     if(update_srh(&p, end) < 0)
         return XDP_DROP;
 
     struct cached_outer_seq *cached;
     cached = bpf_map_lookup_elem(&srh_table, &key);
+    int initialized = 0;
     if(!cached){
         // not initialized -> zero init from scratch map to save stack space
         __u32 zero_key = 0;
-        struct cached_outer_mock *zeroed = bpf_map_lookup_elem(&scratch_table, &zero_key);
+        struct cached_outer_seq *zeroed = bpf_map_lookup_elem(&scratch_table, &zero_key);
         if(!zeroed)
             return XDP_DROP;
-        bpf_map_update_elem(&srh_table, &key, zeroed->bytes, BPF_NOEXIST);
+        bpf_map_update_elem(&srh_table, &key, zeroed, BPF_NOEXIST);
         cached = bpf_map_lookup_elem(&srh_table, &key);
+        initialized = 1;
         if(!cached)
             return XDP_DROP;
     }
@@ -416,7 +412,7 @@ int proxy_ingress(struct xdp_md *ctx)
     /* if(!segs_equal(cached, &p, end)){
     } */
     // update only, if last update for this entry is older than REFRESH_RATE
-    if(bpf_jiffies64() - cached->last_seen > REFRESH_RATE){
+    if(initialized || bpf_jiffies64() - cached->last_seen > REFRESH_RATE){
         if(update_cached_header(cached, (char *)p.ip6, p.outer_len, end, ctx) < 0)
             return XDP_DROP;
     }
